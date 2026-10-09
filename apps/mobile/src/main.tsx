@@ -1,6 +1,7 @@
 import "./global.css"
 import "./polyfill"
 
+import { configureLocalAI } from "@follow/store/ai-local/config"
 import {
   apiContext,
   authClientContext,
@@ -42,6 +43,12 @@ authClientContext.provide(authClient)
 queryClientContext.provide(queryClient)
 apiContext.provide(followApi)
 syncApiContext.provide(followApi.sync)
+
+// Route summary / translation through a self-hosted AI gateway when configured.
+configureLocalAI({
+  baseUrl: process.env.EXPO_PUBLIC_LOCAL_AI_GATEWAY_URL ?? null,
+  token: process.env.EXPO_PUBLIC_LOCAL_AI_TOKEN ?? null,
+})
 
 enableFreeze(true)
 ;[Image, LinearGradient].forEach((Component) => {

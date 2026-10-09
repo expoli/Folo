@@ -1,0 +1,21 @@
+{
+  "name": "folo-local-ai-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenAI-compatible AI gateway for the local-AI Folo fork (chat / summary / translation)",
+  "license": "AGPL-3.0-only",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "mock-upstream": "node test/mock-openai.mjs",
+    "check": "node test/check.mjs"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "4.0.9",
+    "ai": "7.0.109",
+    "zod": "4.6.5"
+  }
+}

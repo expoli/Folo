@@ -1,4 +1,5 @@
 import { env } from "@follow/shared/env.desktop"
+import { getLocalAIConfig } from "@follow/store/ai-local/config"
 import type { HttpChatTransportInitOptions, UIMessageChunk } from "ai"
 import { HttpChatTransport, parseJsonEventStream, uiMessageChunkSchema } from "ai"
 
@@ -45,12 +46,16 @@ export function createChatTitleHandler(
  * This is used by the AbstractChat instance to communicate with AI providers
  */
 export function createChatTransport({ onValue, titleHandler }: CreateChatTransportOptions = {}) {
+  const localAIConfig = getLocalAIConfig()
+  const useLocalAI = localAIConfig.baseUrl !== null
+
   return new ExtendChatTransport({
     onValue,
     titleHandler,
     // Custom fetch configuration
-    api: `${env.VITE_API_URL}/ai/chat`,
-    credentials: "include",
+    api: useLocalAI ? `${localAIConfig.baseUrl}/ai/chat` : `${env.VITE_API_URL}/ai/chat`,
+    // Folo's API authenticates with cookies; a self-hosted gateway has none to send.
+    credentials: useLocalAI ? "omit" : "include",
     // Add selected model to request body
     body: () => {
       const modelState = getAIModelState()

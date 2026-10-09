@@ -13,6 +13,10 @@ export const env = createEnv({
     VITE_API_URL: z.string().default(DEFAULT_VALUES.PROD.API_URL),
     VITE_OTA_URL: z.string().url().default(DEFAULT_VALUES.PROD.OTA_URL),
     VITE_DEV_PROXY: z.string().optional(),
+
+    // Local AI gateway (see tools/ai-gateway). Leave empty to keep using Folo's AI.
+    VITE_LOCAL_AI_GATEWAY_URL: z.string().optional(),
+    VITE_LOCAL_AI_TOKEN: z.string().optional(),
     VITE_SENTRY_DSN: z.string().optional(),
     VITE_INBOXES_EMAIL: z.string().default(DEFAULT_VALUES.PROD.INBOXES_EMAIL),
     VITE_FIREBASE_CONFIG: z.string().default(DEFAULT_VALUES.PROD.FIREBASE_CONFIG),

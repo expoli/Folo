@@ -1,4 +1,5 @@
 import { isFreeRole } from "@follow/constants"
+import { isLocalAIEnabled } from "@follow/store/ai-local/config"
 import { useEntry, usePrefetchEntryDetail } from "@follow/store/entry/hooks"
 import { useEntryTranslation, usePrefetchEntryTranslation } from "@follow/store/translation/hooks"
 import { useUserRole } from "@follow/store/user/hooks"
@@ -50,7 +51,8 @@ export const useEntryContent = (entryId: string) => {
 
   const enableTranslation = useShowAITranslation()
   const userRole = useUserRole()
-  const shouldPrefetchTranslation = enableTranslation && !isFreeRole(userRole)
+  const shouldPrefetchTranslation =
+    enableTranslation && (isLocalAIEnabled() || !isFreeRole(userRole))
   const actionLanguage = useActionLanguage()
   const translationMode = useGeneralSettingKey("translationMode")
   const contentTranslated = useEntryTranslation({

@@ -1,3 +1,4 @@
+import { isLocalAIEnabled } from "@follow/store/ai-local/config"
 import { autoBindThis } from "@follow/utils/bind-this"
 import { createDesktopAPIHeaders } from "@follow/utils/headers"
 import PKG from "@pkg"
@@ -7,6 +8,7 @@ import { nanoid } from "nanoid"
 import type { StateCreator } from "zustand"
 
 import { AIPersistService } from "../../services"
+import { buildLocalAIContext } from "../../utils/local-ai-context"
 import { createChatTitleHandler, createChatTransport } from "../transport"
 import type { BizUIMessage, SendingUIMessage } from "../types"
 import { ZustandChat } from "./chat-instance"
@@ -215,10 +217,17 @@ export class ChatSliceActions {
             >[0])
           : (message as Parameters<typeof this.chatInstance.sendMessage>[0])
 
+      // A self-hosted gateway cannot resolve the ids in the context blocks, so send the
+      // referenced entries (and their text) along with the request.
+      const localAIContext =
+        isLocalAIEnabled() && messageObj?.parts
+          ? buildLocalAIContext(messageObj.parts as BizUIMessage["parts"])
+          : null
+
       // Use the AI SDK's sendMessage method
       const finalOptions = merge(
         {
-          body: { scene: this.get().scene },
+          body: { scene: this.get().scene, ...(localAIContext ? { localAIContext } : {}) },
           headers: createDesktopAPIHeaders({ version: PKG.version }),
         },
         options,

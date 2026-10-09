@@ -4,6 +4,8 @@ import "./styles/main.css"
 import "./lib/web-push-registration"
 
 import { IN_ELECTRON, WEB_BUILD } from "@follow/shared/constants"
+import { env } from "@follow/shared/env.desktop"
+import { configureLocalAI } from "@follow/store/ai-local/config"
 import {
   apiContext,
   authClientContext,
@@ -30,6 +32,12 @@ authClientContext.provide(authClient)
 queryClientContext.provide(queryClient)
 apiContext.provide(followApi)
 syncApiContext.provide(followApi.sync)
+
+// Route summary / translation / chat through a self-hosted AI gateway when configured.
+configureLocalAI({
+  baseUrl: env.VITE_LOCAL_AI_GATEWAY_URL ?? null,
+  token: env.VITE_LOCAL_AI_TOKEN ?? null,
+})
 
 initializeApp().finally(() => {
   import("./push-notification").then(({ registerWebPushNotifications }) => {

@@ -10,6 +10,8 @@ import { api } from "../../context"
 import type { Hydratable, Resetable } from "../../lib/base"
 import { createImmerSetter, createTransaction, createZustandStore } from "../../lib/helper"
 import { readNdjsonStream } from "../../lib/stream"
+import { requestLocalAITranslationBatch } from "../ai-local/client"
+import { isLocalAIEnabled } from "../ai-local/config"
 import { getEntry } from "../entry/getter"
 import { useUserStore } from "../user/store"
 import type { EntryTranslation, TranslationFieldArray, TranslationMode } from "./types"
@@ -176,7 +178,28 @@ class TranslationSyncService {
             fields: group.fields,
             mode: group.mode,
           }
-          const response = await api().ai.translationBatch(request)
+          const localAIEnabled = isLocalAIEnabled()
+          const response = localAIEnabled
+            ? await requestLocalAITranslationBatch({
+                entries: group.ids.flatMap((id) => {
+                  const entry = getEntry(id)
+                  if (!entry) return []
+
+                  return [
+                    {
+                      id,
+                      title: entry.title,
+                      description: entry.description,
+                      content: entry.content,
+                      readabilityContent: entry.readabilityContent,
+                    },
+                  ]
+                }),
+                language: group.language,
+                fields: group.fields.split(","),
+                mode: group.mode,
+              })
+            : await api().ai.translationBatch(request)
 
           await readNdjsonStream<{
             id: string
@@ -232,7 +255,7 @@ class TranslationSyncService {
   }) {
     const userRole = useUserStore.getState().role
 
-    if (userRole === UserRole.Free) return null
+    if (userRole === UserRole.Free && !isLocalAIEnabled()) return null
     const translationMode = mode ?? "bilingual"
     await this.ensureMode(translationMode)
 

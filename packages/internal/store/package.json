@@ -16,6 +16,11 @@
       "require": "./src/modules/action/*.ts",
       "import": "./src/modules/action/*.ts"
     },
+    "./ai-local/*": {
+      "types": "./src/modules/ai-local/*.ts",
+      "require": "./src/modules/ai-local/*.ts",
+      "import": "./src/modules/ai-local/*.ts"
+    },
     "./collection/*": {
       "types": "./src/modules/collection/*.ts",
       "require": "./src/modules/collection/*.ts",
