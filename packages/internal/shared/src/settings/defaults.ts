@@ -178,12 +178,16 @@ export const defaultAISettings: AISettings = {
     providers: [],
   },
 
-  // Self-hosted AI gateway. The desktop build seeds it from `VITE_LOCAL_AI_GATEWAY_URL` /
-  // `VITE_LOCAL_AI_TOKEN`; both values stay on the device.
+  // Self-hosted AI gateway / direct endpoint. The desktop build seeds the gateway fields from
+  // `VITE_LOCAL_AI_GATEWAY_URL` / `VITE_LOCAL_AI_TOKEN`; every value here stays on the device.
   localGateway: {
     enabled: false,
+    mode: "gateway",
     baseUrl: "",
     token: "",
+    directBaseUrl: "",
+    directModel: "",
+    directModels: [],
   },
 }
 

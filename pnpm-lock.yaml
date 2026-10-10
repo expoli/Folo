@@ -214,24 +214,12 @@ overrides:
 packageExtensionsChecksum: sha256-RIMfvgc6XAuGVr5tTScY/biBjLK2nwDHL+mAG0SWMk4=
 
 patchedDependencies:
-  '@mozilla/readability@0.6.0':
-    hash: 61709486ef07e9c8175a4b3f19f1aa4e2a1a75a3c557643c574d6cdacd6dd959
-    path: patches/@mozilla__readability@0.6.0.patch
-  '@pengx17/electron-forge-maker-appimage':
-    hash: 5b5ab1ba36e8c0d7ffee912ebf29c1a18bc101c9c661ceb1bb0bda3deaf4c667
-    path: patches/@pengx17__electron-forge-maker-appimage.patch
-  re-resizable@6.11.2:
-    hash: adb774d32dfdf0ef779d30a8e9e35ba7f3d07706cfe61907db2a53775ea09f23
-    path: patches/re-resizable@6.11.2.patch
-  react-native-ios-utilities@5.2.0:
-    hash: 888121f5af64ca44f1d530e56943c7e07ff6c09c4868a15386a6351650337784
-    path: patches/react-native-ios-utilities@5.2.0.patch
-  react-native-sheet-transitions:
-    hash: 4db5ed53b31f4349d609d7dd2d0e053b6ee4c27e8d6d72c90ee74015ae18235f
-    path: patches/react-native-sheet-transitions.patch
-  workbox-precaching:
-    hash: 51e57c78af317e292b43fca4b72f57b247b7b1a1faa8b03c8881ddb798c7c52f
-    path: patches/workbox-precaching.patch
+  '@mozilla/readability@0.6.0': 61709486ef07e9c8175a4b3f19f1aa4e2a1a75a3c557643c574d6cdacd6dd959
+  '@pengx17/electron-forge-maker-appimage': 5b5ab1ba36e8c0d7ffee912ebf29c1a18bc101c9c661ceb1bb0bda3deaf4c667
+  re-resizable@6.11.2: adb774d32dfdf0ef779d30a8e9e35ba7f3d07706cfe61907db2a53775ea09f23
+  react-native-ios-utilities@5.2.0: 888121f5af64ca44f1d530e56943c7e07ff6c09c4868a15386a6351650337784
+  react-native-sheet-transitions: 4db5ed53b31f4349d609d7dd2d0e053b6ee4c27e8d6d72c90ee74015ae18235f
+  workbox-precaching: 51e57c78af317e292b43fca4b72f57b247b7b1a1faa8b03c8881ddb798c7c52f
 
 importers:
 
@@ -363,6 +351,10 @@ importers:
         version: 6.0.3
 
   apps/desktop:
+    dependencies:
+      '@ai-sdk/openai-compatible':
+        specifier: 3.0.6
+        version: 3.0.6(zod@4.6.5)
     devDependencies:
       '@electron-forge/cli':
         specifier: 7.11.2
@@ -2684,6 +2676,12 @@ packages:
 
   '@ai-sdk/gateway@4.0.88':
     resolution: {integrity: sha512-hpEdOAqrp3FOShSytk6n8BZVZ/xrCV7L9hqYA6Q55h7sQknvh99QfC0uQAIbQWjh+66tmo1Fo6ndQla8uCJGyA==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/openai-compatible@3.0.6':
+    resolution: {integrity: sha512-1YB8Wt2l3X1gCLuF5bYoaQn04XXw+GKqxSvnHAnGEpK+xflJfnJ1l93KHbijLBObM6KAC7amKT9KjM9iu1B6zA==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -20063,7 +20061,7 @@ packages:
     engines: {node: ^22.22.2 || ^24.15.0 || >=26.0.0}
 
   wa-sqlite@https://codeload.github.com/rhashimoto/wa-sqlite/tar.gz/03c00ed67cd934bd664ae310234bba317928f851:
-    resolution: {tarball: https://codeload.github.com/rhashimoto/wa-sqlite/tar.gz/03c00ed67cd934bd664ae310234bba317928f851}
+    resolution: {gitHosted: true, tarball: https://codeload.github.com/rhashimoto/wa-sqlite/tar.gz/03c00ed67cd934bd664ae310234bba317928f851}
     version: 1.0.8
 
   walker@1.0.8:
@@ -20526,6 +20524,12 @@ snapshots:
       '@vercel/oidc': 3.2.0
       zod: 4.6.5
 
+  '@ai-sdk/openai-compatible@3.0.6(zod@4.6.5)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.2
+      '@ai-sdk/provider-utils': 5.0.6(zod@4.6.5)
+      zod: 4.6.5
+
   '@ai-sdk/openai@4.0.9(zod@4.4.3)':
     dependencies:
       '@ai-sdk/provider': 4.0.2
@@ -20548,6 +20552,14 @@ snapshots:
       '@workflow/serde': 4.1.0
       eventsource-parser: 3.1.0
       zod: 4.4.3
+
+  '@ai-sdk/provider-utils@5.0.6(zod@4.6.5)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.2
+      '@standard-schema/spec': 1.1.0
+      '@workflow/serde': 4.1.0
+      eventsource-parser: 3.1.0
+      zod: 4.6.5
 
   '@ai-sdk/provider@4.0.17':
     dependencies:

@@ -1,3 +1,4 @@
+import { LOCAL_AI_DIRECT_ORIGIN } from "@follow/shared/settings/local-ai"
 import { beforeEach, describe, expect, test } from "vitest"
 
 import {
@@ -19,14 +20,18 @@ describe("local AI config", () => {
 
   test("is disabled by default", () => {
     expect(isLocalAIEnabled()).toBe(false)
-    expect(getLocalAIConfig()).toEqual({ baseUrl: null, token: null })
+    expect(getLocalAIConfig()).toEqual({ baseUrl: null, token: null, mode: "gateway" })
     expect(() => localAIUrl("/ai/summary")).toThrow()
   })
 
   test("normalizes the base URL and trims blank values", () => {
     configureLocalAI({ baseUrl: "http://127.0.0.1:8788/", token: " secret " })
 
-    expect(getLocalAIConfig()).toEqual({ baseUrl: "http://127.0.0.1:8788", token: "secret" })
+    expect(getLocalAIConfig()).toEqual({
+      baseUrl: "http://127.0.0.1:8788",
+      token: "secret",
+      mode: "gateway",
+    })
     expect(localAIUrl("/ai/chat")).toBe("http://127.0.0.1:8788/ai/chat")
     expect(localAIUrl("ai/chat")).toBe("http://127.0.0.1:8788/ai/chat")
   })
@@ -90,13 +95,13 @@ describe("resolveLocalAIConfig", () => {
         baseUrl: "  http://127.0.0.1:8788/  ",
         token: " token-1 ",
       }),
-    ).toEqual({ baseUrl: "http://127.0.0.1:8788", token: "token-1" })
+    ).toEqual({ baseUrl: "http://127.0.0.1:8788", token: "token-1", mode: "gateway" })
   })
 
   test("keeps the token empty when the settings do not carry one", () => {
     expect(
       resolveLocalAIConfig({ enabled: true, baseUrl: "http://127.0.0.1:8788", token: "" }),
-    ).toEqual({ baseUrl: "http://127.0.0.1:8788", token: null })
+    ).toEqual({ baseUrl: "http://127.0.0.1:8788", token: null, mode: "gateway" })
   })
 
   test.each([
@@ -118,5 +123,54 @@ describe("resolveLocalAIConfig", () => {
     )
     expect(isLocalAIEnabled()).toBe(true)
     expect(localAIUrl("/ai/summary")).toBe("http://127.0.0.1:8788/ai/summary")
+  })
+
+  describe("direct mode", () => {
+    test("uses a synthetic origin, so `localAIUrl` can still build every request path", () => {
+      configureLocalAI(
+        resolveLocalAIConfig({
+          enabled: true,
+          mode: "direct",
+          directBaseUrl: "  https://api.example.com/v1/  ",
+          directModel: "model-a",
+          directModels: ["model-a"],
+        }),
+      )
+
+      expect(getLocalAIConfig()).toEqual({
+        baseUrl: LOCAL_AI_DIRECT_ORIGIN,
+        token: null,
+        mode: "direct",
+      })
+      expect(isLocalAIEnabled()).toBe(true)
+      expect(localAIUrl("/ai/summary")).toBe(`${LOCAL_AI_DIRECT_ORIGIN}/ai/summary`)
+    })
+
+    test("carries no gateway token, because the endpoint key lives in the main process", () => {
+      expect(
+        resolveLocalAIConfig({
+          enabled: true,
+          mode: "direct",
+          baseUrl: "http://127.0.0.1:8788",
+          token: "gateway-token",
+          directBaseUrl: "https://api.example.com/v1",
+        }),
+      ).toEqual({ baseUrl: LOCAL_AI_DIRECT_ORIGIN, token: null, mode: "direct" })
+    })
+
+    test.each([
+      ["no direct endpoint yet", { directBaseUrl: "", directModel: "model-a" }],
+      ["a blank direct endpoint", { directBaseUrl: "   " }],
+    ])("stays disabled with %s", (_label, partial) => {
+      expect(resolveLocalAIConfig({ enabled: true, mode: "direct", ...partial })).toBeNull()
+    })
+
+    test("keeps the injected transport of the direct fetch", () => {
+      const directFetch = (() => Promise.resolve(new Response(""))) as typeof globalThis.fetch
+      configureLocalAI({ mode: "direct", baseUrl: LOCAL_AI_DIRECT_ORIGIN, fetch: directFetch })
+
+      expect(getLocalAIConfig().fetch).toBe(directFetch)
+      expect(getLocalAIConfig().mode).toBe("direct")
+    })
   })
 })

@@ -1,20 +1,29 @@
 import type { LocalAIGatewaySettings } from "@follow/shared/settings/interface"
+import type { LocalAIMode } from "@follow/shared/settings/local-ai"
+import { LOCAL_AI_DIRECT_ORIGIN } from "@follow/shared/settings/local-ai"
 
 /**
- * Local AI gateway configuration.
+ * Local AI configuration.
  *
  * By default every AI request (summary / translation / chat) is proxied through Folo's own
- * servers. When a local gateway is configured here, the shared store layer sends those
- * requests to that gateway instead, so AI runs on your own model endpoint.
+ * servers. When a local runtime is configured here, the shared store layer sends those requests
+ * there instead, so AI runs on your own model endpoint: either a self-hosted gateway
+ * (`tools/ai-gateway`) or an OpenAI-compatible endpoint served by the desktop main process.
  *
- * The gateway implementation lives in `tools/ai-gateway`; each app wires the configuration
- * up at bootstrap (desktop renderer / mobile `main.tsx`).
+ * Each app wires the configuration up at bootstrap (desktop renderer / mobile `main.tsx`).
  */
 export interface LocalAIConfig {
-  /** Gateway origin without a trailing slash, e.g. `http://127.0.0.1:8788`. `null` disables local AI. */
+  /** Request origin without a trailing slash. `null` disables local AI. */
   baseUrl: string | null
-  /** Optional bearer token sent to the gateway. */
+  /** Optional bearer token sent to a self-hosted gateway. */
   token: string | null
+  /** Which runtime owns `baseUrl`: a gateway process or the app's own direct endpoint. */
+  mode: LocalAIMode
+  /**
+   * Transport override of `direct` mode: the desktop renderer routes the paths above to the main
+   * process over IPC. Gateways keep using the global fetch.
+   */
+  fetch?: typeof globalThis.fetch
 }
 
 /**
@@ -34,7 +43,7 @@ export const DEFAULT_LOCAL_AI_CONTEXT_BUDGET: LocalAIContextBudget = {
   maxTotalChars: 20 * 1500,
 }
 
-const DISABLED_CONFIG: LocalAIConfig = { baseUrl: null, token: null }
+const DISABLED_CONFIG: LocalAIConfig = { baseUrl: null, token: null, mode: "gateway" }
 
 let config: LocalAIConfig = DISABLED_CONFIG
 let contextBudget: LocalAIContextBudget = { ...DEFAULT_LOCAL_AI_CONTEXT_BUDGET }
@@ -50,25 +59,43 @@ export const configureLocalAI = (next?: Partial<LocalAIConfig> | null): LocalAIC
   config = {
     baseUrl: normalizeLocalAIBaseUrl(next?.baseUrl),
     token: next?.token?.trim() || null,
+    mode: next?.mode ?? "gateway",
+    fetch: next?.fetch,
   }
 
   return config
 }
 
 /**
- * Maps the persisted `localGateway` settings (desktop / mobile) onto the gateway config.
- * `enabled: false` or an empty address disables the gateway, which keeps Folo's own AI path.
- * Fields are optional so settings stored before the gateway existed still resolve to `null`.
+ * Maps the persisted `localGateway` settings (desktop / mobile) onto the runtime config.
+ *
+ * `enabled: false` disables local AI entirely, which keeps Folo's own AI path. `gateway` needs a
+ * gateway address; `direct` needs an endpoint the app's own provider adapter can reach and gets a
+ * synthetic origin, because the direct transport answers the paths locally. Fields are optional so
+ * settings stored before a mode existed still resolve to `null`.
  */
 export const resolveLocalAIConfig = (
   settings?: Partial<LocalAIGatewaySettings> | null,
 ): Partial<LocalAIConfig> | null => {
-  const baseUrl = normalizeLocalAIBaseUrl(settings?.baseUrl)
-  if (!settings?.enabled || !baseUrl) {
+  if (!settings?.enabled) {
     return null
   }
 
-  return { baseUrl, token: settings.token?.trim() || null }
+  if (settings.mode === "direct") {
+    const directBaseUrl = normalizeLocalAIBaseUrl(settings.directBaseUrl)
+    if (!directBaseUrl) {
+      return null
+    }
+
+    return { mode: "direct", baseUrl: LOCAL_AI_DIRECT_ORIGIN, token: null }
+  }
+
+  const baseUrl = normalizeLocalAIBaseUrl(settings.baseUrl)
+  if (!baseUrl) {
+    return null
+  }
+
+  return { mode: "gateway", baseUrl, token: settings.token?.trim() || null }
 }
 
 export const resetLocalAI = () => {

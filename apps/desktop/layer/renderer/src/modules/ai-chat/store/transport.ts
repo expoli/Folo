@@ -60,6 +60,9 @@ export function createChatTransport({ onValue, titleHandler }: CreateChatTranspo
     // (send / regenerate / resume) needs the bearer token. `createDesktopAPIHeaders` is still
     // sent per request by `ChatSliceActions`; the two maps are merged by the AI SDK.
     headers: useLocalAI ? () => createLocalAIHeaders() : undefined,
+    // In `direct` mode the synthetic origin above is served by the app's own main process, so the
+    // request travels over IPC instead of the network.
+    fetch: useLocalAI ? localAIConfig.fetch : undefined,
     // Add selected model to request body
     body: () => {
       const modelState = getAIModelState()

@@ -116,6 +116,7 @@ export const createDefaultSettings = (): WebAISettings => ({
   showSplineButton: true,
   // The build-time env only seeds the first run; Settings → AI overrides it at runtime.
   localGateway: {
+    ...defaultAISettings.localGateway,
     enabled: Boolean(env.VITE_LOCAL_AI_GATEWAY_URL),
     baseUrl: env.VITE_LOCAL_AI_GATEWAY_URL ?? "",
     token: env.VITE_LOCAL_AI_TOKEN ?? "",

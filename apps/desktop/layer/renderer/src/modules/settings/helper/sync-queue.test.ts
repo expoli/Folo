@@ -1,3 +1,4 @@
+import { defaultAISettings } from "@follow/shared/settings/defaults"
 import { getSyncModelHandler } from "@follow/store/sync/model-registry"
 import type { SyncAction } from "@follow/store/sync/types"
 import { getStorageNS } from "@follow/utils/ns"
@@ -327,6 +328,7 @@ describe("desktop spotlight setting sync", () => {
     await settingSyncQueue.init()
 
     setAISetting("localGateway", {
+      ...defaultAISettings.localGateway,
       enabled: true,
       baseUrl: "http://127.0.0.1:8788",
       token: "token-1",
@@ -340,6 +342,7 @@ describe("desktop spotlight setting sync", () => {
 
   test("the account's AI settings do not touch the local gateway", () => {
     setAISetting("localGateway", {
+      ...defaultAISettings.localGateway,
       enabled: true,
       baseUrl: "http://127.0.0.1:8788",
       token: "token-1",
@@ -357,6 +360,7 @@ describe("desktop spotlight setting sync", () => {
 
     expect(getAISettings().personalizePrompt).toBe("Answer like a pirate.")
     expect(getAISettings().localGateway).toEqual({
+      ...defaultAISettings.localGateway,
       enabled: true,
       baseUrl: "http://127.0.0.1:8788",
       token: "token-1",

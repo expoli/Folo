@@ -1,4 +1,5 @@
 import type { SupportedActionLanguage } from "@follow/shared"
+import type { LocalAIProbeResult } from "@follow/shared/settings/local-ai"
 import type { ConfigResponse, SummaryResponse } from "@follow-app/client-sdk"
 
 import type { LocalAIContextBudget } from "./config"
@@ -25,6 +26,16 @@ const MAX_ERROR_CHARS = 300
 
 const gatewayBaseUrl = () => getLocalAIConfig().baseUrl ?? "(not configured)"
 
+/** Names the runtime the user configured, so an error points at the right thing. */
+const localAIPeer = () =>
+  getLocalAIConfig().mode === "direct" ? "Local AI endpoint" : "Local AI gateway"
+
+/**
+ * Transport of the current mode: `direct` mode installs an IPC-backed fetch, a self-hosted
+ * gateway keeps the global one.
+ */
+const localAIFetch = () => getLocalAIConfig().fetch ?? globalThis.fetch
+
 const readErrorText = async (response: Response) => {
   try {
     return (await response.text()).slice(0, MAX_ERROR_CHARS).replace(/\s+/g, " ").trim()
@@ -33,9 +44,9 @@ const readErrorText = async (response: Response) => {
   }
 }
 
-/** Separates "the gateway rejected us" from "the model or its upstream failed". */
+/** Separates "the endpoint rejected us" from "the model or its upstream failed". */
 const statusHint = (status: number) => {
-  if (status === 401 || status === 403) return "gateway token rejected"
+  if (status === 401 || status === 403) return "token rejected"
   if (status >= 500) return "upstream model error"
   return "request rejected"
 }
@@ -44,11 +55,11 @@ const request = async (path: string, init: RequestInit) => {
   const url = localAIUrl(path)
 
   try {
-    return await fetch(url, init)
+    return await localAIFetch()(url, init)
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
     throw new Error(
-      `Local AI gateway unreachable at ${gatewayBaseUrl()}: ${reason}`.slice(0, MAX_ERROR_CHARS),
+      `${localAIPeer()} unreachable at ${gatewayBaseUrl()}: ${reason}`.slice(0, MAX_ERROR_CHARS),
     )
   }
 }
@@ -57,7 +68,7 @@ const assertOk = async (response: Response, action: string) => {
   if (response.ok) return
 
   const detail = await readErrorText(response)
-  const message = `Local AI gateway ${action} failed at ${gatewayBaseUrl()} (${response.status} ${statusHint(response.status)})`
+  const message = `${localAIPeer()} ${action} failed at ${gatewayBaseUrl()} (${response.status} ${statusHint(response.status)})`
 
   throw new Error((detail ? `${message}: ${detail}` : message).slice(0, MAX_ERROR_CHARS))
 }
@@ -107,23 +118,6 @@ export const requestLocalAITranslationBatch = async (params: {
   return response
 }
 
-/**
- * Outcome of `GET {baseUrl}/health?probe=1`, splitting the four situations the settings UI shows:
- * the model answered, the gateway rejected the token, the gateway is not reachable, or the
- * upstream model call failed.
- */
-export type LocalAIGatewayProbeResult =
-  | {
-      kind: "ok"
-      /** Round trip of the model call the gateway spends for `?probe=1`, `null` if it does not probe. */
-      latencyMs: number | null
-      upstream: string | null
-      defaultModel: string | null
-    }
-  | { kind: "token-rejected" }
-  | { kind: "unreachable"; detail: string }
-  | { kind: "upstream-error"; detail: string }
-
 const asNonEmptyString = (value: unknown): string | null =>
   typeof value === "string" && value.trim() ? value : null
 
@@ -139,7 +133,12 @@ export const probeLocalAIGateway = async (params: {
   baseUrl: string
   token?: string | null
   signal?: AbortSignal
-}): Promise<LocalAIGatewayProbeResult> => {
+  /**
+   * Transport override. `direct` mode passes its IPC fetch so a draft endpoint can be tested
+   * before it is saved; gateways keep the global one.
+   */
+  fetch?: typeof globalThis.fetch
+}): Promise<LocalAIProbeResult> => {
   const baseUrl = normalizeLocalAIBaseUrl(params.baseUrl)
   if (!baseUrl) {
     return { kind: "unreachable", detail: "no gateway address" }
@@ -148,11 +147,13 @@ export const probeLocalAIGateway = async (params: {
   const token = params.token?.trim()
   const headers = token ? { Authorization: `Bearer ${token}` } : undefined
 
+  const fetchImpl = params.fetch ?? localAIFetch()
+
   // `GET /health` is exempt from `GATEWAY_TOKEN`, so a wrong (or missing) token still looks
   // healthy there. Ask an authenticated endpoint first; a gateway without it falls through.
   let authResponse: Response
   try {
-    authResponse = await fetch(`${baseUrl}/ai/chat/config`, { headers, signal: params.signal })
+    authResponse = await fetchImpl(`${baseUrl}/ai/chat/config`, { headers, signal: params.signal })
   } catch (error) {
     return { kind: "unreachable", detail: errorDetail(error) }
   }
@@ -164,7 +165,7 @@ export const probeLocalAIGateway = async (params: {
   let response: Response
 
   try {
-    response = await fetch(`${baseUrl}/health?probe=1`, {
+    response = await fetchImpl(`${baseUrl}/health?probe=1`, {
       headers,
       signal: params.signal,
     })

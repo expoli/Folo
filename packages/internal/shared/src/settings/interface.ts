@@ -1,3 +1,5 @@
+import type { LocalAIMode } from "./local-ai"
+
 export interface GeneralSettings {
   appLaunchOnStartup: boolean
   language: string
@@ -213,9 +215,17 @@ export interface MCPService {
  */
 export interface LocalAIGatewaySettings {
   enabled: boolean
+  /** Which local AI runtime is used: a self-hosted gateway process or a direct endpoint. */
+  mode: LocalAIMode
   /** Gateway origin without a trailing slash, e.g. `http://127.0.0.1:8788`. Empty disables it. */
   baseUrl: string
   token: string
+  /** OpenAI-compatible endpoint used in `direct` mode, e.g. `https://api.openai.com/v1`. */
+  directBaseUrl: string
+  /** Model a direct request uses when it does not name one. */
+  directModel: string
+  /** Models offered in the direct model picker. */
+  directModels: string[]
 }
 
 export interface AISettings {

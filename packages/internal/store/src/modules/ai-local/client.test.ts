@@ -1,6 +1,7 @@
 import { createServer } from "node:http"
 import type { AddressInfo } from "node:net"
 
+import { LOCAL_AI_DIRECT_ORIGIN } from "@follow/shared/settings/local-ai"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 
 import { readNdjsonStream } from "../../lib/stream"
@@ -288,7 +289,8 @@ describe("local AI gateway client", () => {
     const message = (error as Error).message
     expect(message).toContain(gatewayUrl)
     expect(message).toContain("401")
-    expect(message).toContain("gateway token rejected")
+    expect(message).toContain("Local AI gateway summary failed")
+    expect(message).toContain("token rejected")
     expect(message.length).toBeLessThanOrEqual(300)
   })
 
@@ -414,5 +416,178 @@ describe("probeLocalAIGateway", () => {
 
     expect(result.kind).toBe("unreachable")
     expect((result as { detail: string }).detail).toContain("invalid /health response")
+  })
+})
+
+describe("direct mode transport", () => {
+  interface DirectCall {
+    url: string
+    method: string
+    authorization?: string
+    body: Record<string, unknown> | null
+  }
+
+  const directCalls: DirectCall[] = []
+  const directFetch: typeof globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url
+    const headers = (init?.headers ?? {}) as Record<string, string>
+    directCalls.push({
+      url,
+      method: init?.method ?? "GET",
+      authorization: headers.Authorization,
+      body: typeof init?.body === "string" ? JSON.parse(init.body) : null,
+    })
+
+    const json = (payload: unknown) =>
+      new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+
+    const { pathname } = new URL(url)
+    if (pathname === "/ai/summary") {
+      return json({ code: 0, data: "direct summary" })
+    }
+    if (pathname === "/ai/translation/batch") {
+      const body = directCalls.at(-1)?.body as { entries?: { id: string }[] } | null
+      const lines = (body?.entries ?? []).map(
+        (entry) => `${JSON.stringify({ id: entry.id, data: { title: `D:${entry.id}` } })}\n`,
+      )
+      return new Response(lines.join(""), {
+        status: 200,
+        headers: { "Content-Type": "application/x-ndjson" },
+      })
+    }
+    if (pathname === "/ai/chat/config") {
+      return json({
+        defaultModel: "local-model",
+        availableModels: ["local-model", "local-model-small"],
+        localAIContext: { maxEntries: 3, maxCharsPerEntry: 500, maxTotalChars: 1500 },
+      })
+    }
+    if (pathname === "/health") {
+      return json({
+        ok: true,
+        upstream: "https://api.example.com/v1",
+        defaultModel: "local-model",
+        probe: { ok: true, latencyMs: 7 },
+      })
+    }
+
+    return new Response(JSON.stringify({ error: `unsupported ${pathname}` }), { status: 404 })
+  }
+
+  beforeEach(() => {
+    directCalls.length = 0
+    configureLocalAI({
+      mode: "direct",
+      baseUrl: LOCAL_AI_DIRECT_ORIGIN,
+      token: null,
+      fetch: directFetch,
+    })
+  })
+
+  test("sends summary, translation and chat config through the injected fetch", async () => {
+    const summary = await requestLocalAISummary({
+      entryId: "entry-1",
+      language: "zh-CN",
+      target: "content",
+      title: "Title",
+      content: "Body",
+    })
+
+    expect(summary).toEqual({ code: 0, data: "direct summary" })
+    expect(directCalls[0]).toMatchObject({
+      url: `${LOCAL_AI_DIRECT_ORIGIN}/ai/summary`,
+      method: "POST",
+      body: { entryId: "entry-1", content: "Body" },
+    })
+
+    const response = await requestLocalAITranslationBatch({
+      entries: [{ id: "entry-1", title: "One" }],
+      language: "en",
+      fields: ["title"],
+      mode: "bilingual",
+    })
+    const lines: { id: string; data: Record<string, string> }[] = []
+    await readNdjsonStream<{ id: string; data: Record<string, string> }>(response, (line) => {
+      lines.push(line)
+    })
+
+    expect(lines).toEqual([{ id: "entry-1", data: { title: "D:entry-1" } }])
+    expect(directCalls[1]).toMatchObject({
+      url: `${LOCAL_AI_DIRECT_ORIGIN}/ai/translation/batch`,
+      method: "POST",
+    })
+
+    const config = await fetchLocalAIConfig()
+
+    expect(config.defaultModel).toBe("local-model")
+    expect(config.availableModels).toEqual(["local-model", "local-model-small"])
+    expect(directCalls[2]).toMatchObject({
+      url: `${LOCAL_AI_DIRECT_ORIGIN}/ai/chat/config`,
+      method: "GET",
+    })
+  })
+
+  test("never builds an authorization header: the key stays in the main process", async () => {
+    await requestLocalAISummary({ entryId: "e", language: "en", target: "content", content: "x" })
+
+    expect(directCalls.every((call) => call.authorization === undefined)).toBe(true)
+  })
+
+  test("keeps the context budget the direct endpoint announces", async () => {
+    await fetchLocalAIConfig()
+
+    expect(getLocalAIContextBudget()).toEqual({
+      maxEntries: 3,
+      maxCharsPerEntry: 500,
+      maxTotalChars: 1500,
+    })
+  })
+
+  test("probes through the injected fetch", async () => {
+    await expect(probeLocalAIGateway({ baseUrl: LOCAL_AI_DIRECT_ORIGIN })).resolves.toEqual({
+      kind: "ok",
+      latencyMs: 7,
+      upstream: "https://api.example.com/v1",
+      defaultModel: "local-model",
+    })
+    expect(directCalls.map((call) => call.url)).toEqual([
+      `${LOCAL_AI_DIRECT_ORIGIN}/ai/chat/config`,
+      `${LOCAL_AI_DIRECT_ORIGIN}/health?probe=1`,
+    ])
+  })
+
+  test("probes a draft endpoint through an explicitly passed transport", async () => {
+    resetLocalAI()
+
+    await expect(
+      probeLocalAIGateway({ baseUrl: LOCAL_AI_DIRECT_ORIGIN, fetch: directFetch }),
+    ).resolves.toMatchObject({ kind: "ok", defaultModel: "local-model" })
+    expect(directCalls).toHaveLength(2)
+  })
+
+  test("surfaces a rejected key as a token rejection", async () => {
+    const rejectingFetch: typeof globalThis.fetch = async () =>
+      new Response("Unauthorized", { status: 401 })
+
+    await expect(
+      probeLocalAIGateway({ baseUrl: LOCAL_AI_DIRECT_ORIGIN, fetch: rejectingFetch }),
+    ).resolves.toEqual({ kind: "token-rejected" })
+  })
+
+  test("keeps the gateway path unchanged when the mode is gateway", async () => {
+    configureLocalAI({ mode: "gateway", baseUrl: gatewayUrl })
+
+    await requestLocalAISummary({
+      entryId: "entry-1",
+      language: "zh-CN",
+      target: "content",
+      content: "Body",
+    })
+
+    expect(requests[0]).toMatchObject({ method: "POST", url: "/ai/summary" })
+    expect(directCalls).toHaveLength(0)
   })
 })

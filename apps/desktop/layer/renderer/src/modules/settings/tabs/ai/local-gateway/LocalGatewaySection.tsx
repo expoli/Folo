@@ -1,9 +1,11 @@
 import { Button } from "@follow/components/ui/button/index.js"
 import { Input } from "@follow/components/ui/input/index.js"
 import { Label } from "@follow/components/ui/label/index.jsx"
+import { SegmentGroup, SegmentItem } from "@follow/components/ui/segment/index.jsx"
 import { Switch } from "@follow/components/ui/switch/index.jsx"
 import type { LocalAIGatewaySettings } from "@follow/shared/settings/interface"
-import type { LocalAIGatewayProbeResult } from "@follow/store/ai-local/client"
+import type { LocalAIProbeResult } from "@follow/shared/settings/local-ai"
+import { LOCAL_AI_DIRECT_ORIGIN } from "@follow/shared/settings/local-ai"
 import { probeLocalAIGateway } from "@follow/store/ai-local/client"
 import { cn } from "@follow/utils/utils"
 import { isEqual } from "es-toolkit"
@@ -11,14 +13,23 @@ import { useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 
 import { setAISetting, useAISettingValue } from "~/atoms/settings/ai"
+import { ipcServices } from "~/lib/client"
+import { createLocalAIDirectFetch } from "~/lib/local-ai-direct-fetch"
+import { getDirectAIConfig } from "~/lib/local-ai-gateway"
+
+import { DirectModeFields } from "./DirectModeFields"
 
 const FALLBACK_GATEWAY_SETTINGS: LocalAIGatewaySettings = {
   enabled: false,
+  mode: "gateway",
   baseUrl: "",
   token: "",
+  directBaseUrl: "",
+  directModel: "",
+  directModels: [],
 }
 
-const ProbeResultLine = ({ result }: { result: LocalAIGatewayProbeResult | null }) => {
+const ProbeResultLine = ({ result }: { result: LocalAIProbeResult | null }) => {
   const { t } = useTranslation("ai")
 
   if (!result) return null
@@ -66,8 +77,10 @@ const ProbeResultLine = ({ result }: { result: LocalAIGatewayProbeResult | null 
 }
 
 /**
- * Settings → AI: point the app at a self-hosted gateway. The address and the token stay on the
- * device, and a saved change applies to the next AI request without restarting the app.
+ * Settings → AI: run AI on your own model endpoint. It either talks to a self-hosted gateway
+ * process, or — direct mode — calls an OpenAI-compatible endpoint from the desktop main process,
+ * where the API key is encrypted with the OS keyring. Everything stays on the device, and a saved
+ * change applies to the next AI request without restarting the app.
  */
 export const LocalGatewaySection = () => {
   const { t } = useTranslation("ai")
@@ -76,14 +89,37 @@ export const LocalGatewaySection = () => {
   const [draft, setDraft] = useState(settings)
   const [showToken, setShowToken] = useState(false)
   const [probing, setProbing] = useState(false)
-  const [probeResult, setProbeResult] = useState<LocalAIGatewayProbeResult | null>(null)
+  const [probeResult, setProbeResult] = useState<LocalAIProbeResult | null>(null)
+  const [hasApiKey, setHasApiKey] = useState(false)
+  const [encryptionAvailable, setEncryptionAvailable] = useState(true)
   const probeAbortRef = useRef<AbortController | null>(null)
 
-  // Follow changes made elsewhere (account settings are stripped of the gateway, so this only
-  // reacts to the gateway itself) without dropping what the user is typing in the meantime.
+  // Follow changes made elsewhere (account settings are stripped of the local fields, so this only
+  // reacts to the section itself) without dropping what the user is typing in the meantime.
   useEffect(() => {
     setDraft((current) => (isEqual(current, settings) ? current : settings))
   }, [settings])
+
+  // The API key lives in the main process, so its status is not part of the settings.
+  useEffect(() => {
+    const services = ipcServices
+    if (!services) return
+
+    let cancelled = false
+    void Promise.all([
+      services.localAI.isSecureStorageAvailable(),
+      services.localAI.hasApiKey(),
+    ]).then(([available, stored]) => {
+      if (cancelled) return
+
+      setEncryptionAvailable(available)
+      setHasApiKey(stored)
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => () => probeAbortRef.current?.abort(), [])
 
@@ -94,7 +130,7 @@ export const LocalGatewaySection = () => {
   }
 
   const changeDraft = (changes: Partial<LocalAIGatewaySettings>) => {
-    // A test result belongs to the address it was probed with, so an edit drops it.
+    // A test result belongs to the settings it was probed with, so an edit drops it.
     probeAbortRef.current?.abort()
     setProbing(false)
     setProbeResult(null)
@@ -108,12 +144,22 @@ export const LocalGatewaySection = () => {
 
     setProbing(true)
     setProbeResult(null)
+
     // The draft is probed, not the saved settings, so an address can be tested before saving it.
-    const result = await probeLocalAIGateway({
-      baseUrl: draft.baseUrl,
-      token: draft.token,
-      signal: controller.signal,
-    })
+    // Direct mode has no address the renderer could reach: the probe travels over IPC and uses the
+    // API key that is already stored in the main process.
+    const result =
+      draft.mode === "direct"
+        ? await probeLocalAIGateway({
+            baseUrl: LOCAL_AI_DIRECT_ORIGIN,
+            signal: controller.signal,
+            fetch: createLocalAIDirectFetch(() => getDirectAIConfig(draft)),
+          })
+        : await probeLocalAIGateway({
+            baseUrl: draft.baseUrl,
+            token: draft.token,
+            signal: controller.signal,
+          })
 
     if (controller.signal.aborted) return
 
@@ -123,6 +169,9 @@ export const LocalGatewaySection = () => {
 
   const saveBaseUrl = () => save({ baseUrl: draft.baseUrl.trim() })
   const saveToken = () => save({ token: draft.token.trim() })
+
+  const isDirect = draft.mode === "direct"
+  const canTest = isDirect ? Boolean(draft.directBaseUrl.trim()) : Boolean(draft.baseUrl.trim())
 
   return (
     <div className="space-y-4">
@@ -143,56 +192,97 @@ export const LocalGatewaySection = () => {
       </div>
 
       <div className="space-y-2">
-        <Label className="text-sm font-medium text-text" htmlFor="local-gateway-url">
-          {t("settings.localGateway.url.label")}
+        <Label className="text-sm font-medium text-text">
+          {t("settings.localGateway.mode.label")}
         </Label>
-        <Input
-          id="local-gateway-url"
-          type="url"
-          placeholder="http://127.0.0.1:8788"
-          value={draft.baseUrl}
-          onChange={(event) => changeDraft({ baseUrl: event.target.value })}
-          onBlur={saveBaseUrl}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") saveBaseUrl()
+        <SegmentGroup
+          className="h-9"
+          value={draft.mode ?? "gateway"}
+          onValueChanged={(value) => {
+            if (value !== "gateway" && value !== "direct") return
+            // A probe result belongs to the mode it was tested in.
+            probeAbortRef.current?.abort()
+            setProbing(false)
+            setProbeResult(null)
+            save({ mode: value })
           }}
-        />
-        <p className="text-xs text-text-secondary">{t("settings.localGateway.url.description")}</p>
-      </div>
-
-      <div className="space-y-2">
-        <Label className="text-sm font-medium text-text" htmlFor="local-gateway-token">
-          {t("settings.localGateway.token.label")}
-        </Label>
-        <div className="flex items-center gap-2">
-          <Input
-            id="local-gateway-token"
-            type={showToken ? "text" : "password"}
-            value={draft.token}
-            onChange={(event) => changeDraft({ token: event.target.value })}
-            onBlur={saveToken}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") saveToken()
-            }}
-          />
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            aria-label={
-              showToken
-                ? t("settings.localGateway.token.hide")
-                : t("settings.localGateway.token.show")
-            }
-            onClick={() => setShowToken((visible) => !visible)}
-          >
-            <i className={showToken ? "i-mgc-eye-close-cute-re" : "i-mgc-eye-2-cute-re"} />
-          </Button>
-        </div>
+        >
+          <SegmentItem value="gateway" label={t("settings.localGateway.mode.gateway")} />
+          <SegmentItem value="direct" label={t("settings.localGateway.mode.direct")} />
+        </SegmentGroup>
         <p className="text-xs text-text-secondary">
-          {t("settings.localGateway.token.description")}
+          {isDirect
+            ? t("settings.localGateway.mode.directDescription")
+            : t("settings.localGateway.mode.gatewayDescription")}
         </p>
       </div>
+
+      {isDirect ? (
+        <DirectModeFields
+          settings={draft}
+          save={save}
+          changeDraft={changeDraft}
+          hasApiKey={hasApiKey}
+          onApiKeyChanged={setHasApiKey}
+          encryptionAvailable={encryptionAvailable}
+        />
+      ) : (
+        <>
+          <div className="space-y-2">
+            <Label className="text-sm font-medium text-text" htmlFor="local-gateway-url">
+              {t("settings.localGateway.url.label")}
+            </Label>
+            <Input
+              id="local-gateway-url"
+              type="url"
+              placeholder="http://127.0.0.1:8788"
+              value={draft.baseUrl}
+              onChange={(event) => changeDraft({ baseUrl: event.target.value })}
+              onBlur={saveBaseUrl}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") saveBaseUrl()
+              }}
+            />
+            <p className="text-xs text-text-secondary">
+              {t("settings.localGateway.url.description")}
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-sm font-medium text-text" htmlFor="local-gateway-token">
+              {t("settings.localGateway.token.label")}
+            </Label>
+            <div className="flex items-center gap-2">
+              <Input
+                id="local-gateway-token"
+                type={showToken ? "text" : "password"}
+                value={draft.token}
+                onChange={(event) => changeDraft({ token: event.target.value })}
+                onBlur={saveToken}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") saveToken()
+                }}
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                aria-label={
+                  showToken
+                    ? t("settings.localGateway.token.hide")
+                    : t("settings.localGateway.token.show")
+                }
+                onClick={() => setShowToken((visible) => !visible)}
+              >
+                <i className={showToken ? "i-mgc-eye-close-cute-re" : "i-mgc-eye-2-cute-re"} />
+              </Button>
+            </div>
+            <p className="text-xs text-text-secondary">
+              {t("settings.localGateway.token.description")}
+            </p>
+          </div>
+        </>
+      )}
 
       <div className="flex items-center gap-3">
         <Button
@@ -200,7 +290,7 @@ export const LocalGatewaySection = () => {
           variant="outline"
           size="sm"
           isLoading={probing}
-          disabled={!draft.baseUrl.trim()}
+          disabled={!canTest}
           onClick={testConnection}
         >
           {t("settings.localGateway.test.action")}

@@ -153,6 +153,26 @@ rejected"). Plain `GET /health` stays instant and never touches the model.
 | `apps/desktop/…/entry-column/item.tsx`, `entry-content/hooks.tsx`                | translation prefetch is not gated on the paid plan when the gateway is used                                                                     |
 | `apps/desktop/layer/renderer/src/main.tsx`, `apps/mobile/src/main.tsx`           | wire the env vars into `configureLocalAI`                                                                                                       |
 
+## Relationship to the app's built-in direct mode
+
+The client also ships a **direct** mode (`Settings → AI → Connection mode → Direct connection`). It
+speaks the very same `/ai/*` contract, but the provider adapter runs inside the Electron main
+process instead of this Node gateway: the model prompts, the chunking limits and the
+`localAIContext` budget in `apps/desktop/layer/main/src/local-ai/` are copied from `server.mjs` on
+purpose, so the two paths can be compared line by line.
+
+|                                                                                   | this gateway                                                   | built-in direct mode                                                                                      |
+| --------------------------------------------------------------------------------- | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Where it runs                                                                     | separate Node process (also usable from the mobile app)        | Electron main process                                                                                     |
+| Configuration                                                                     | `.env` + `GATEWAY_TOKEN`                                       | `Settings → AI` (address and model list stay on the device, the API key is encrypted with the OS keyring) |
+| Endpoint                                                                          | `AI_BASE_URL`                                                  | one OpenAI-compatible endpoint per install                                                                |
+| Extra tuning (`AI_SUMMARY_CHUNK_CHARS`, `AI_HEADERS`, translation concurrency, …) | yes                                                            | no: the defaults are compiled in                                                                          |
+| Translation delivery                                                              | NDJSON streamed line by line, so entries appear as they finish | buffered: IPC answers a batch in one piece, so the translations appear together                           |
+| System proxy                                                                      | follows `HTTP(S)_PROXY` of its shell                           | follows the same proxy as the rest of the app (Chromium's `net.fetch`)                                    |
+
+Keep `server.mjs` as the reference: it stays the more configurable of the two, and a behaviour
+change there has to be mirrored in the direct mode (and vice versa) to keep them interchangeable.
+
 ## Limits & caveats
 
 - **The Folo account is still required** for feeds/content: the backend is closed source, so this

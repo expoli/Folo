@@ -102,5 +102,8 @@
   },
   "runtimeVersion": "1.15.0",
   "productName": "Folo",
-  "mainHash": "33d22fed64e4c31da89217489b46d1b2f8c3a8136175d83c417b68108963c13c"
+  "mainHash": "33d22fed64e4c31da89217489b46d1b2f8c3a8136175d83c417b68108963c13c",
+  "dependencies": {
+    "@ai-sdk/openai-compatible": "3.0.6"
+  }
 }
