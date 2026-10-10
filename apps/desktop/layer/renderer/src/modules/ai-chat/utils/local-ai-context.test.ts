@@ -222,6 +222,34 @@ describe("buildLocalAIContext", () => {
     expect(context?.entries[1]?.body).toBe("y".repeat(500))
   })
 
+  test("treats a prompt that names a period as a summary", () => {
+    const now = dayjs("2026-01-02T12:00:00.000Z")
+    setLocalAIContextBudget({ maxEntries: 1, maxTotalChars: 100 })
+    setEntries([
+      createEntry("main", {
+        publishedAt: now.subtract(2, "hour").toDate(),
+        content: "x".repeat(200),
+      }),
+      createEntry("tail", {
+        publishedAt: now.subtract(3, "hour").toDate(),
+        content: "y".repeat(500),
+      }),
+    ])
+
+    // The automatic timeline summary sends `scene: "general"`, so the window in the prompt is what
+    // tells a summary apart from a chat — and this request carried no `reduce` option.
+    const context = buildLocalAIContext(
+      [
+        blockPart([allEntriesBlock()]),
+        questionPart('Summarize <mention-date text="24hoursago"></mention-date>.'),
+      ],
+      { now },
+    )
+
+    expect(context?.coverage).toEqual({ matched: 2, window: "last 24 hours" })
+    expect(context?.entries[1]?.body).toBe("y".repeat(500))
+  })
+
   test("keeps the payload light for a chat that did not ask for summaries", () => {
     setLocalAIContextBudget({ maxEntries: 1, maxTotalChars: 100 })
     setEntries([

@@ -266,6 +266,7 @@ describe("describeChatContext", () => {
       blocks: 2,
       entries: 2,
       withText: 2,
+      reduceTexts: 0,
       matched: 2,
       window: "",
       feeds: 1,
@@ -294,6 +295,7 @@ describe("describeChatContext", () => {
       blocks: 0,
       entries: 3,
       withText: 1,
+      reduceTexts: 0,
       matched: 40,
       window: "Today",
       feeds: 0,
@@ -302,11 +304,25 @@ describe("describeChatContext", () => {
     })
   })
 
+  test("reports how many articles the client sent for the reduce pre-pass", () => {
+    expect(
+      describeChatContext({
+        entries: [
+          { content: "12345" },
+          { body: "full text sent for summarizing" },
+          { title: "no text at all" },
+        ],
+        coverage: { matched: 3 },
+      }),
+    ).toMatchObject({ entries: 3, withText: 1, reduceTexts: 1 })
+  })
+
   test("reports zeros for a request without context", () => {
     expect(describeChatContext(undefined)).toEqual({
       blocks: 0,
       entries: 0,
       withText: 0,
+      reduceTexts: 0,
       matched: 0,
       window: "",
       feeds: 0,

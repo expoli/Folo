@@ -454,7 +454,9 @@ export const buildLocalAIContext = (
   // A prompt that names a period ("today") narrows the selection; it never widens it.
   const window = parseMentionDateWindow(question, now)
   // A summary of a wide selection asks for the texts of everything it matched; a chat does not.
-  const reduce = options.reduce === true
+  // The window is the reliable signal: both the shortcut and the automatic timeline summary carry
+  // one, while the automatic one sends `scene: "general"` and would slip past a scene check.
+  const reduce = options.reduce === true || window !== null
 
   if (blocks.length === 0) {
     // Folo's built-in shortcuts ship no context blocks (upstream the server resolves them), so the

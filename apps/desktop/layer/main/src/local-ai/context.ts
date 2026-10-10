@@ -268,11 +268,14 @@ export const describeChatContext = (context: LocalAIContext | null | undefined) 
 
   let contextChars = 0
   let withText = 0
+  let reduceTexts = 0
   for (const entry of entries) {
     if (entry && typeof entry.content === "string" && entry.content) {
       contextChars += entry.content.length
       withText += 1
     }
+
+    if (entry && !asText(entry.content) && asText(entry.body)) reduceTexts += 1
   }
 
   const matched =
@@ -291,6 +294,8 @@ export const describeChatContext = (context: LocalAIContext | null | undefined) 
     blocks: blocks.length,
     entries: entries.length,
     withText,
+    /** Articles the client sent for the reduce pre-pass; zero means it never asked for one. */
+    reduceTexts,
     matched,
     window,
     feeds: feeds.length,
