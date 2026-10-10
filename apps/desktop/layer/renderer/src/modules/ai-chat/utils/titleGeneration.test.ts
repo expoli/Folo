@@ -38,9 +38,13 @@ describe("chat title generation", () => {
     const title = await generateAndUpdateChatTitle("chat-1", messages)
 
     expect(title).toBe("Local title")
-    expect(mocks.requestLocalAITitle).toHaveBeenCalledWith({
-      messages: [{ role: "user", content: "What did I miss?" }],
-    })
+    expect(mocks.requestLocalAITitle).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messages: [{ role: "user", content: "What did I miss?" }],
+        // Titles follow the interface language, like every other local answer.
+        language: expect.any(String),
+      }),
+    )
     // Folo's own endpoint is not reachable from a local-only setup, so it must not be called.
     expect(mocks.summaryTitle).not.toHaveBeenCalled()
     expect(mocks.updateSessionTitle).toHaveBeenCalledWith("chat-1", "Local title")

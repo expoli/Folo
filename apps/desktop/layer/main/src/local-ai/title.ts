@@ -2,7 +2,7 @@ import type { LanguageModel } from "ai"
 import { generateText } from "ai"
 
 import { jsonResponse } from "./http"
-import { DEFAULT_TITLE_SYSTEM_PROMPT } from "./prompts"
+import { DEFAULT_TITLE_SYSTEM_PROMPT, languageName } from "./prompts"
 
 /**
  * `POST /ai/summary-title`: Folo's server writes a short title for a chat; with a local model the
@@ -27,6 +27,7 @@ export const handleSummaryTitleRequest = async (params: {
   model: LanguageModel
 }) => {
   const messages = Array.isArray(params.body.messages) ? params.body.messages : []
+  const language = typeof params.body.language === "string" ? params.body.language : null
   const transcript = messages
     .map((message) => {
       const entry = message as { role?: unknown; content?: unknown }
@@ -45,10 +46,19 @@ export const handleSummaryTitleRequest = async (params: {
 
   const { text } = await generateText({
     model: params.model,
-    system: DEFAULT_TITLE_SYSTEM_PROMPT,
+    system: [
+      DEFAULT_TITLE_SYSTEM_PROMPT,
+      language ? `Write the title in ${languageName(language)}.` : "",
+    ]
+      .filter(Boolean)
+      .join(" "),
     prompt: transcript,
     maxOutputTokens: TITLE_MAX_OUTPUT_TOKENS,
   })
 
-  return jsonResponse(200, { title: cleanTitle(text) })
+  const title = cleanTitle(text)
+  // The UI reports a failure when no title comes back, so the log says which case it was.
+  console.log(`[local-ai] title: ${title ? JSON.stringify(title) : "(empty reply)"}`)
+
+  return jsonResponse(200, { title })
 }

@@ -24,6 +24,7 @@ interface RecordedBody {
   entries?: { id: string; title?: string }[]
   fields?: string[]
   messages?: { role: string; content: string }[]
+  language?: string
 }
 
 interface RecordedRequest {
@@ -214,10 +215,13 @@ describe("local AI gateway client", () => {
     })
   })
 
-  test("asks the local model for a chat title", async () => {
+  test("asks the local model for a chat title in the interface language", async () => {
     configureLocalAI({ baseUrl: gatewayUrl, token: "token-1" })
 
-    const title = await requestLocalAITitle({ messages: [{ role: "user", content: "hello" }] })
+    const title = await requestLocalAITitle({
+      messages: [{ role: "user", content: "hello" }],
+      language: "zh-CN",
+    })
 
     expect(title).toBe("title of hello")
     expect(requests[0]).toMatchObject({
@@ -225,6 +229,7 @@ describe("local AI gateway client", () => {
       url: "/ai/summary-title",
       authorization: "Bearer token-1",
     })
+    expect(requests[0]?.body?.language).toBe("zh-CN")
   })
 
   test("reports a failed title request with its action name", async () => {

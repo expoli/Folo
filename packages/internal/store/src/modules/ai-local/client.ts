@@ -103,6 +103,8 @@ export const requestLocalAISummary = async (params: {
  */
 export const requestLocalAITitle = async (params: {
   messages: { role: string; content: string }[]
+  /** Language of the interface, so the title matches it instead of the prompt's own language. */
+  language?: string | null
 }): Promise<string | null> => {
   const response = await request("/ai/summary-title", {
     method: "POST",

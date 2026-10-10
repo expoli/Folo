@@ -1,6 +1,7 @@
 import type { ReactNode } from "react"
 import { useCallback, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
+import { toast } from "sonner"
 
 import { setAIPanelVisibility } from "~/atoms/settings/ai"
 import {
@@ -45,11 +46,21 @@ export const ChatMoreDropdown = ({
 
       setIsGenerating(true)
       try {
-        await generateAndUpdateChatTitle(currentChatId, messages.slice(-2), (newTitle) => {
-          chatActions.setCurrentTitle(newTitle)
-        })
+        const title = await generateAndUpdateChatTitle(
+          currentChatId,
+          messages.slice(-2),
+          (newTitle) => {
+            chatActions.setCurrentTitle(newTitle)
+          },
+        )
+
+        // A failed or empty reply would otherwise look like a click that did nothing.
+        if (!title) {
+          toast.error(t("common.generate_title_failed"))
+        }
       } catch (error) {
         console.error("Failed to generate title:", error)
+        toast.error(t("common.generate_title_failed"))
       } finally {
         setIsGenerating(false)
       }

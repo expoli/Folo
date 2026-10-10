@@ -8,6 +8,7 @@ import { merge } from "es-toolkit/compat"
 import { nanoid } from "nanoid"
 import type { StateCreator } from "zustand"
 
+import { getActionLanguage } from "~/atoms/settings/general"
 import { followClient } from "~/lib/api-client"
 
 import { AIPersistService } from "../../services"
@@ -305,7 +306,12 @@ export class ChatSliceActions {
       // Use the AI SDK's sendMessage method
       const finalOptions = merge(
         {
-          body: { scene: this.get().scene, ...(localAIContext ? { localAIContext } : {}) },
+          body: {
+            scene: this.get().scene,
+            ...(localAIContext ? { localAIContext } : {}),
+            // A local model has no access to the interface language, so the request carries it.
+            ...(isLocalAIEnabled() ? { language: getActionLanguage() } : {}),
+          },
           headers: createDesktopAPIHeaders({ version: PKG.version }),
         },
         options,
@@ -370,7 +376,11 @@ export class ChatSliceActions {
       // Use the AI SDK's regenerate method
       const finalOptions = merge(
         {
-          body: { scene: this.get().scene, ...(localAIContext ? { localAIContext } : {}) },
+          body: {
+            scene: this.get().scene,
+            ...(localAIContext ? { localAIContext } : {}),
+            ...(isLocalAIEnabled() ? { language: getActionLanguage() } : {}),
+          },
         },
         options,
       )

@@ -2,7 +2,7 @@
  * Request-shaping helpers of the app's own AI provider, copied from `tools/ai-gateway/server.mjs`
  * so the direct mode and a self-hosted gateway produce the same prompts.
  */
-import { NO_CONTEXT_NOTE } from "./prompts"
+import { languageName, NO_CONTEXT_NOTE } from "./prompts"
 
 interface ChatPart {
   type?: unknown
@@ -143,8 +143,22 @@ export const formatLocalContext = (context: LocalAIContext | null | undefined): 
 }
 
 /** Joins the chat system prompt with the attached context, or with the "no context" note. */
-export const buildChatSystemPrompt = (systemPrompt: string, localContext: string) =>
-  [systemPrompt, localContext, localContext === "" ? NO_CONTEXT_NOTE : ""]
+/**
+ * System prompt of a chat request: the base prompt, the language the app runs in (a shortcut's own
+ * prompt may be written in another language, and the answer should still match the interface) and
+ * whatever entries the client attached.
+ */
+export const buildChatSystemPrompt = (
+  systemPrompt: string,
+  localContext: string,
+  language?: string | null,
+) =>
+  [
+    systemPrompt,
+    language ? `Reply in ${languageName(language)}.` : "",
+    localContext,
+    localContext === "" ? NO_CONTEXT_NOTE : "",
+  ]
     .filter(Boolean)
     .join("\n\n")
 

@@ -361,8 +361,13 @@ const handleChat = async (req, res, body) => {
     )
   }
 
+  const languageInstruction =
+    typeof body.language === "string" && body.language
+      ? `Reply in ${languageName(body.language)}.`
+      : ""
   const systemPrompt = [
     config.chatSystemPrompt,
+    languageInstruction,
     localContext,
     localContext === "" ? NO_CONTEXT_NOTE : "",
   ]
@@ -510,6 +515,7 @@ const cleanTitle = (text) => {
 
 const handleSummaryTitle = async (req, res, body) => {
   const messages = Array.isArray(body.messages) ? body.messages : []
+  const language = typeof body.language === "string" ? body.language : ""
   const transcript = messages
     .map((message) => {
       const role = typeof message?.role === "string" ? message.role : "user"
@@ -527,13 +533,21 @@ const handleSummaryTitle = async (req, res, body) => {
 
   const { text } = await generateText({
     model: resolveModel(modelFor(body.model)),
-    system: config.titleSystemPrompt,
+    system: [
+      config.titleSystemPrompt,
+      language ? `Write the title in ${languageName(language)}.` : "",
+    ]
+      .filter(Boolean)
+      .join(" "),
     prompt: transcript,
     temperature: config.temperature,
     maxOutputTokens: 32,
   })
 
-  sendJson(res, 200, { title: cleanTitle(text) })
+  const title = cleanTitle(text)
+  console.log(`[gateway] title: ${title ? JSON.stringify(title) : "(empty reply)"}`)
+
+  sendJson(res, 200, { title })
 }
 
 const handleSummary = async (req, res, body) => {

@@ -1,6 +1,7 @@
 import { requestLocalAITitle } from "@follow/store/ai-local/client"
 import { isLocalAIEnabled } from "@follow/store/ai-local/config"
 
+import { getActionLanguage } from "~/atoms/settings/general"
 import { followClient } from "~/lib/api-client"
 
 import { AIPersistService } from "../services"
@@ -33,7 +34,11 @@ export const generateChatTitle = async (chatId: string, messages: SendingUIMessa
   // Folo's server writes the title upstream; a local gateway has no such route served by Folo, so
   // the same local model writes it instead of failing on an unreachable backend.
   if (isLocalAIEnabled()) {
-    return requestLocalAITitle({ messages: relevantMessages }).catch((error) => {
+    return requestLocalAITitle({
+      messages: relevantMessages,
+      // Titles follow the interface language: a shortcut's own prompt may be written in another one.
+      language: getActionLanguage(),
+    }).catch((error) => {
       console.error("Failed to generate chat title locally:", error)
       return null
     })

@@ -338,6 +338,27 @@ describe("routeLocalAIRequest", () => {
     expect(system?.content).toContain("Entry body")
   })
 
+  test("tells the model which language to answer in", async () => {
+    const calls = stubUpstream(() => sseStream("你好"))
+
+    const response = await route({
+      path: "/ai/chat",
+      body: JSON.stringify({
+        messages: [{ role: "user", parts: [{ type: "text", text: "Hi" }] }],
+        language: "zh-CN",
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    await response.text()
+
+    const system = (calls[0]!.body?.messages as { role: string; content: string }[]).find(
+      (message) => message.role === "system",
+    )
+    // A shortcut's own prompt may be English; the answer still has to match the interface.
+    expect(system?.content).toContain("Reply in Simplified Chinese.")
+  })
+
   test("rejects a chat request without message text", async () => {
     stubUpstream(() => sseStream("unused"))
 

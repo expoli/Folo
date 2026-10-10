@@ -117,6 +117,14 @@ describe("buildChatSystemPrompt", () => {
     expect(prompt).toContain(NO_CONTEXT_NOTE)
     expect(prompt.endsWith(NO_CONTEXT_NOTE)).toBe(true)
   })
+
+  test("states the language the interface runs in", () => {
+    const prompt = buildChatSystemPrompt(DEFAULT_CHAT_SYSTEM_PROMPT, "### [1] Entry", "ja")
+
+    // A shortcut's own prompt may be written in another language; the answer still has to match.
+    expect(prompt).toContain("Reply in Japanese.")
+    expect(prompt).not.toContain("Reply in English.")
+  })
 })
 
 describe("describeChatContext", () => {

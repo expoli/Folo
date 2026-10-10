@@ -16,6 +16,8 @@ interface ChatRequestBody {
   messages?: unknown
   model?: unknown
   localAIContext?: LocalAIContext
+  /** Interface language of the app, so the answer matches it instead of the prompt's language. */
+  language?: unknown
 }
 
 /**
@@ -60,7 +62,11 @@ export const createChatStreamResponse = (params: {
 
   const result = streamText({
     model,
-    system: buildChatSystemPrompt(DEFAULT_CHAT_SYSTEM_PROMPT, localContext),
+    system: buildChatSystemPrompt(
+      DEFAULT_CHAT_SYSTEM_PROMPT,
+      localContext,
+      typeof body.language === "string" ? body.language : null,
+    ),
     messages,
     maxOutputTokens: MAX_OUTPUT_TOKENS,
     abortSignal,
