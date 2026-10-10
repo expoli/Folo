@@ -4,8 +4,6 @@ import "./styles/main.css"
 import "./lib/web-push-registration"
 
 import { IN_ELECTRON, WEB_BUILD } from "@follow/shared/constants"
-import { env } from "@follow/shared/env.desktop"
-import { configureLocalAI } from "@follow/store/ai-local/config"
 import {
   apiContext,
   authClientContext,
@@ -25,6 +23,10 @@ import { ElECTRON_CUSTOM_TITLEBAR_HEIGHT } from "./constants"
 import { initializeApp } from "./initialize"
 import { registerAppGlobalShortcuts } from "./initialize/global-shortcuts"
 import { followApi } from "./lib/api-client"
+import {
+  applyLocalAIGatewaySettings,
+  subscribeLocalAIGatewaySettings,
+} from "./lib/local-ai-gateway"
 import { queryClient } from "./lib/query-client"
 import { router } from "./router"
 
@@ -33,11 +35,10 @@ queryClientContext.provide(queryClient)
 apiContext.provide(followApi)
 syncApiContext.provide(followApi.sync)
 
-// Route summary / translation / chat through a self-hosted AI gateway when configured.
-configureLocalAI({
-  baseUrl: env.VITE_LOCAL_AI_GATEWAY_URL ?? null,
-  token: env.VITE_LOCAL_AI_TOKEN ?? null,
-})
+// Route summary / translation / chat through a self-hosted AI gateway when configured. The
+// build-time env only supplies the first-run default; Settings → AI changes it at runtime.
+applyLocalAIGatewaySettings()
+subscribeLocalAIGatewaySettings()
 
 initializeApp().finally(() => {
   import("./push-notification").then(({ registerWebPushNotifications }) => {

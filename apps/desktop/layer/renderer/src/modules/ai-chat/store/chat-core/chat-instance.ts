@@ -1,4 +1,4 @@
-import type { ChatInit, ChatStatus } from "ai"
+import type { ChatInit, ChatStatus, ChatTransport } from "ai"
 import { AbstractChat } from "ai"
 
 import type { BizUIMessage } from "../types"
@@ -33,6 +33,20 @@ export class ZustandChat extends AbstractChat<BizUIMessage> {
   // Public getter for state access
   get chatState() {
     return this.state
+  }
+
+  /**
+   * Replaces the transport of a running chat in place. The AI SDK reads its transport only when a
+   * request starts, so swapping it keeps the messages and the stream that is already running, and
+   * the next request uses the new endpoint (used when the gateway settings change).
+   *
+   * NOTE: this pokes the private `transport` field of `AbstractChat` (ai@7.0.109,
+   * `src/ui/chat.ts`), so re-check that the field is still assigned once and read per request
+   * when `ai` is upgraded; otherwise recreate the chat store instead.
+   */
+  setTransport(transport: ChatTransport<BizUIMessage>): void {
+    const mutableSelf = this as unknown as { transport: ChatTransport<BizUIMessage> }
+    mutableSelf.transport = transport
   }
 
   // Cleanup method

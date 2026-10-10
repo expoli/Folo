@@ -4,7 +4,12 @@ import type { AddressInfo } from "node:net"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 
 import { readNdjsonStream } from "../../lib/stream"
-import { fetchLocalAIConfig, requestLocalAISummary, requestLocalAITranslationBatch } from "./client"
+import {
+  fetchLocalAIConfig,
+  probeLocalAIGateway,
+  requestLocalAISummary,
+  requestLocalAITranslationBatch,
+} from "./client"
 import {
   configureLocalAI,
   DEFAULT_LOCAL_AI_CONTEXT_BUDGET,
@@ -43,7 +48,9 @@ beforeAll(async () => {
       body,
     })
 
-    if (req.headers.authorization === "Bearer bad-token") {
+    // Like the bundled gateway, `/health` ignores the token: only the authenticated endpoints
+    // can tell a wrong token apart from a healthy probe.
+    if (req.headers.authorization === "Bearer bad-token" && req.url !== "/health?probe=1") {
       res.writeHead(401, { "Content-Type": "text/plain" })
       res.end("Unauthorized")
       return
@@ -93,6 +100,70 @@ beforeAll(async () => {
     if (req.url === "/ai/broken") {
       res.writeHead(502, { "Content-Type": "text/plain" })
       res.end("upstream exploded")
+      return
+    }
+
+    // The bundled gateway answers `/health` before it checks `GATEWAY_TOKEN`, so only an
+    // authenticated endpoint can tell a wrong token apart from a healthy probe.
+    if (
+      req.url === "/exempt/ai/chat/config" &&
+      req.headers.authorization === "Bearer wrong-token"
+    ) {
+      res.writeHead(401, { "Content-Type": "text/plain" })
+      res.end("Unauthorized")
+      return
+    }
+
+    if (req.url === "/exempt/health?probe=1") {
+      res.writeHead(200, { "Content-Type": "application/json" })
+      res.end(
+        JSON.stringify({ ok: true, defaultModel: "model-a", probe: { ok: true, latencyMs: 5 } }),
+      )
+      return
+    }
+
+    if (req.url === "/health?probe=1") {
+      res.writeHead(200, { "Content-Type": "application/json" })
+      res.end(
+        JSON.stringify({
+          ok: true,
+          upstream: "http://127.0.0.1:11434/v1",
+          defaultModel: "model-a",
+          models: ["model-a"],
+          probe: { ok: true, latencyMs: 12 },
+        }),
+      )
+      return
+    }
+
+    // A gateway that predates `?probe=1`: reachable, but the model stays unchecked.
+    if (req.url === "/unchecked/health?probe=1") {
+      res.writeHead(200, { "Content-Type": "application/json" })
+      res.end(JSON.stringify({ ok: true, upstream: "http://upstream", defaultModel: "model-a" }))
+      return
+    }
+
+    if (req.url === "/flaky/health?probe=1") {
+      res.writeHead(200, { "Content-Type": "application/json" })
+      res.end(
+        JSON.stringify({
+          ok: true,
+          defaultModel: "model-a",
+          probe: { ok: false, latencyMs: 900, error: "model refused the ping" },
+        }),
+      )
+      return
+    }
+
+    if (req.url === "/broken/health?probe=1") {
+      res.writeHead(502, { "Content-Type": "text/plain" })
+      res.end("upstream exploded")
+      return
+    }
+
+    if (req.url === "/not-a-gateway/health?probe=1") {
+      res.writeHead(200, { "Content-Type": "text/html" })
+      res.end("<html>hello</html>")
       return
     }
 
@@ -254,5 +325,94 @@ describe("local AI gateway client", () => {
     expect(message).toContain("unreachable")
     expect(message).toContain("http://127.0.0.1:9")
     expect(message.length).toBeLessThanOrEqual(300)
+  })
+})
+
+describe("probeLocalAIGateway", () => {
+  test("reports the model and the latency of a healthy gateway", async () => {
+    // The trailing slash is trimmed, so the probe URL keeps a single separator.
+    const result = await probeLocalAIGateway({ baseUrl: `${gatewayUrl}/`, token: "token-1" })
+
+    expect(result).toEqual({
+      kind: "ok",
+      latencyMs: 12,
+      upstream: "http://127.0.0.1:11434/v1",
+      defaultModel: "model-a",
+    })
+    expect(requests[0]).toMatchObject({
+      method: "GET",
+      url: "/ai/chat/config",
+      authorization: "Bearer token-1",
+    })
+    expect(requests.find((request) => request.url === "/health?probe=1")).toMatchObject({
+      method: "GET",
+      authorization: "Bearer token-1",
+    })
+  })
+
+  test("sends no authorization header without a token", async () => {
+    await probeLocalAIGateway({ baseUrl: gatewayUrl })
+
+    expect(requests.length).toBeGreaterThan(0)
+    expect(requests.every((request) => request.authorization === undefined)).toBe(true)
+  })
+
+  test("reports a rejected token", async () => {
+    await expect(probeLocalAIGateway({ baseUrl: gatewayUrl, token: "bad-token" })).resolves.toEqual(
+      { kind: "token-rejected" },
+    )
+  })
+
+  test("reports a rejected token even when /health ignores the token", async () => {
+    // The bundled gateway exempts `/health` from `GATEWAY_TOKEN`, so a wrong token would look
+    // healthy there; the authenticated preflight is what catches it.
+    await expect(
+      probeLocalAIGateway({ baseUrl: `${gatewayUrl}/exempt`, token: "wrong-token" }),
+    ).resolves.toEqual({ kind: "token-rejected" })
+  })
+
+  test("reports an unreachable gateway with the fetch failure", async () => {
+    const result = await probeLocalAIGateway({ baseUrl: "http://127.0.0.1:9" })
+
+    expect(result.kind).toBe("unreachable")
+    expect((result as { detail: string }).detail).toBeTruthy()
+  })
+
+  test("reports a refused address without calling fetch", async () => {
+    await expect(probeLocalAIGateway({ baseUrl: "   " })).resolves.toEqual({
+      kind: "unreachable",
+      detail: "no gateway address",
+    })
+    expect(requests).toHaveLength(0)
+  })
+
+  test("reports a model that failed the gateway's own probe", async () => {
+    await expect(probeLocalAIGateway({ baseUrl: `${gatewayUrl}/flaky` })).resolves.toEqual({
+      kind: "upstream-error",
+      detail: "model refused the ping",
+    })
+  })
+
+  test("reports a gateway error status as an upstream error", async () => {
+    await expect(probeLocalAIGateway({ baseUrl: `${gatewayUrl}/broken` })).resolves.toEqual({
+      kind: "upstream-error",
+      detail: "upstream exploded",
+    })
+  })
+
+  test("stays ok without a latency for a gateway that does not probe", async () => {
+    await expect(probeLocalAIGateway({ baseUrl: `${gatewayUrl}/unchecked` })).resolves.toEqual({
+      kind: "ok",
+      latencyMs: null,
+      upstream: "http://upstream",
+      defaultModel: "model-a",
+    })
+  })
+
+  test("treats a non JSON body as an unreachable gateway", async () => {
+    const result = await probeLocalAIGateway({ baseUrl: `${gatewayUrl}/not-a-gateway` })
+
+    expect(result.kind).toBe("unreachable")
+    expect((result as { detail: string }).detail).toContain("invalid /health response")
   })
 })

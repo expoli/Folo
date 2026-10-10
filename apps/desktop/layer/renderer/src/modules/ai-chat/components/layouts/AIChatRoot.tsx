@@ -71,7 +71,10 @@ export const AIChatRoot: FC<AIChatRootProps> = ({
   const chatActions = useAiContextStore((state) => state.chatActions)
 
   useEffect(() => {
+    ChatSliceActions.registerInstance(chatActions)
     ChatSliceActions.setActiveInstance(chatActions)
+
+    return () => ChatSliceActions.unregisterInstance(chatActions)
   }, [chatActions])
 
   const Element = (

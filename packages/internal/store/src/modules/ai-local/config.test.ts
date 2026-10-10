@@ -8,6 +8,7 @@ import {
   isLocalAIEnabled,
   localAIUrl,
   resetLocalAI,
+  resolveLocalAIConfig,
   setLocalAIContextBudget,
 } from "./config"
 
@@ -78,5 +79,44 @@ describe("local AI config", () => {
     resetLocalAI()
 
     expect(getLocalAIContextBudget()).toEqual(DEFAULT_LOCAL_AI_CONTEXT_BUDGET)
+  })
+})
+
+describe("resolveLocalAIConfig", () => {
+  test("maps saved settings onto the gateway config, trimming blanks and slashes", () => {
+    expect(
+      resolveLocalAIConfig({
+        enabled: true,
+        baseUrl: "  http://127.0.0.1:8788/  ",
+        token: " token-1 ",
+      }),
+    ).toEqual({ baseUrl: "http://127.0.0.1:8788", token: "token-1" })
+  })
+
+  test("keeps the token empty when the settings do not carry one", () => {
+    expect(
+      resolveLocalAIConfig({ enabled: true, baseUrl: "http://127.0.0.1:8788", token: "" }),
+    ).toEqual({ baseUrl: "http://127.0.0.1:8788", token: null })
+  })
+
+  test.each([
+    ["the switch is off", { enabled: false, baseUrl: "http://127.0.0.1:8788", token: "t" }],
+    ["the address is empty", { enabled: true, baseUrl: "", token: "t" }],
+    ["the address is blank", { enabled: true, baseUrl: "   ", token: "" }],
+    ["settings predate the gateway", undefined],
+    ["settings are unreadable", null],
+  ])("disables the gateway when %s", (_label, settings) => {
+    expect(resolveLocalAIConfig(settings)).toBeNull()
+  })
+
+  test("feeds configureLocalAI so the store follows the saved settings", () => {
+    configureLocalAI(resolveLocalAIConfig({ enabled: false, baseUrl: "", token: "" }))
+    expect(isLocalAIEnabled()).toBe(false)
+
+    configureLocalAI(
+      resolveLocalAIConfig({ enabled: true, baseUrl: "http://127.0.0.1:8788", token: "t" }),
+    )
+    expect(isLocalAIEnabled()).toBe(true)
+    expect(localAIUrl("/ai/summary")).toBe("http://127.0.0.1:8788/ai/summary")
   })
 })

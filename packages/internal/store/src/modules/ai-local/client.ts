@@ -6,6 +6,7 @@ import {
   createLocalAIHeaders,
   getLocalAIConfig,
   localAIUrl,
+  normalizeLocalAIBaseUrl,
   setLocalAIContextBudget,
 } from "./config"
 
@@ -104,6 +105,115 @@ export const requestLocalAITranslationBatch = async (params: {
   await assertOk(response, "translation")
 
   return response
+}
+
+/**
+ * Outcome of `GET {baseUrl}/health?probe=1`, splitting the four situations the settings UI shows:
+ * the model answered, the gateway rejected the token, the gateway is not reachable, or the
+ * upstream model call failed.
+ */
+export type LocalAIGatewayProbeResult =
+  | {
+      kind: "ok"
+      /** Round trip of the model call the gateway spends for `?probe=1`, `null` if it does not probe. */
+      latencyMs: number | null
+      upstream: string | null
+      defaultModel: string | null
+    }
+  | { kind: "token-rejected" }
+  | { kind: "unreachable"; detail: string }
+  | { kind: "upstream-error"; detail: string }
+
+const asNonEmptyString = (value: unknown): string | null =>
+  typeof value === "string" && value.trim() ? value : null
+
+const errorDetail = (error: unknown) =>
+  (error instanceof Error ? error.message : String(error)).slice(0, MAX_ERROR_CHARS)
+
+/**
+ * Probes a gateway address the user typed but has not saved yet: `?probe=1` makes the gateway
+ * spend one minimal model call, so "gateway is up" can be told apart from "the model answers".
+ * Never throws — the caller renders the outcome, including `token-rejected` for 401/403.
+ */
+export const probeLocalAIGateway = async (params: {
+  baseUrl: string
+  token?: string | null
+  signal?: AbortSignal
+}): Promise<LocalAIGatewayProbeResult> => {
+  const baseUrl = normalizeLocalAIBaseUrl(params.baseUrl)
+  if (!baseUrl) {
+    return { kind: "unreachable", detail: "no gateway address" }
+  }
+
+  const token = params.token?.trim()
+  const headers = token ? { Authorization: `Bearer ${token}` } : undefined
+
+  // `GET /health` is exempt from `GATEWAY_TOKEN`, so a wrong (or missing) token still looks
+  // healthy there. Ask an authenticated endpoint first; a gateway without it falls through.
+  let authResponse: Response
+  try {
+    authResponse = await fetch(`${baseUrl}/ai/chat/config`, { headers, signal: params.signal })
+  } catch (error) {
+    return { kind: "unreachable", detail: errorDetail(error) }
+  }
+
+  if (authResponse.status === 401 || authResponse.status === 403) {
+    return { kind: "token-rejected" }
+  }
+
+  let response: Response
+
+  try {
+    response = await fetch(`${baseUrl}/health?probe=1`, {
+      headers,
+      signal: params.signal,
+    })
+  } catch (error) {
+    return { kind: "unreachable", detail: errorDetail(error) }
+  }
+
+  if (response.status === 401 || response.status === 403) {
+    return { kind: "token-rejected" }
+  }
+
+  if (response.status >= 500) {
+    return { kind: "upstream-error", detail: (await readErrorText(response)) || "gateway error" }
+  }
+
+  if (!response.ok) {
+    const detail = await readErrorText(response)
+    return { kind: "unreachable", detail: `HTTP ${response.status}${detail ? ` ${detail}` : ""}` }
+  }
+
+  let payload: { probe?: unknown; upstream?: unknown; defaultModel?: unknown }
+  try {
+    payload = (await response.json()) as typeof payload
+  } catch (error) {
+    return { kind: "unreachable", detail: `invalid /health response: ${errorDetail(error)}` }
+  }
+
+  const result = {
+    upstream: asNonEmptyString(payload.upstream),
+    defaultModel: asNonEmptyString(payload.defaultModel),
+  }
+  const probe = payload.probe
+
+  // A gateway that predates the probe answers `/health` without one; it is reachable, but the
+  // model itself stays unchecked.
+  if (!probe || typeof probe !== "object") {
+    return { kind: "ok", latencyMs: null, ...result }
+  }
+
+  const { ok, latencyMs, error } = probe as { ok?: unknown; latencyMs?: unknown; error?: unknown }
+  if (ok !== true) {
+    return { kind: "upstream-error", detail: asNonEmptyString(error) || "model probe failed" }
+  }
+
+  return {
+    kind: "ok",
+    latencyMs: typeof latencyMs === "number" && Number.isFinite(latencyMs) ? latencyMs : null,
+    ...result,
+  }
 }
 
 /**

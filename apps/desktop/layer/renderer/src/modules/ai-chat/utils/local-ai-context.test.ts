@@ -2,10 +2,11 @@ import { FeedViewType } from "@follow/constants"
 import { resetLocalAI, setLocalAIContextBudget } from "@follow/store/ai-local/config"
 import { useEntryStore } from "@follow/store/entry/store"
 import type { EntryModel } from "@follow/store/entry/types"
+import dayjs from "dayjs"
 import { beforeEach, describe, expect, test } from "vitest"
 
 import type { AIChatContextBlock, BizUIMessage } from "../store/types"
-import { buildLocalAIContext } from "./local-ai-context"
+import { buildLocalAIContext, parseMentionDateWindow } from "./local-ai-context"
 
 type MessageParts = BizUIMessage["parts"]
 
@@ -213,5 +214,148 @@ describe("buildLocalAIContext", () => {
 
     expect(buildLocalAIContext([questionPart("hello")])).toBeNull()
     expect(buildLocalAIContext([blockPart([mainEntryBlock("missing-entry")])])).toBeNull()
+  })
+})
+
+// Folo's built-in shortcuts send an empty context block and let the server read the timeline; a
+// local gateway cannot, so the client gathers the entries the prompt's date window points at.
+describe("implicit timeline context", () => {
+  const now = dayjs("2026-01-02T12:00:00.000Z")
+
+  beforeEach(() => {
+    resetLocalAI()
+    setEntries([])
+  })
+
+  test("gathers the entries of a relative date mention", () => {
+    setEntries([
+      createEntry("recent", { publishedAt: new Date("2026-01-02T09:00:00.000Z") }),
+      createEntry("older", { publishedAt: new Date("2025-12-30T09:00:00.000Z") }),
+    ])
+
+    const context = buildLocalAIContext(
+      [questionPart('Summarize <mention-date text="24hoursago"></mention-date>.')],
+      { now },
+    )
+
+    expect(context?.blocks).toEqual([{ type: "timeline", value: "last 24 hours" }])
+    expect(context?.entries.map((entry) => entry.id)).toEqual(["recent"])
+  })
+
+  test("reads an explicit start/end window, newest first", () => {
+    setEntries([
+      createEntry("a", { publishedAt: new Date("2026-01-01T08:00:00.000Z") }),
+      createEntry("b", { publishedAt: new Date("2026-01-01T20:00:00.000Z") }),
+      createEntry("c", { publishedAt: new Date("2026-01-02T08:00:00.000Z") }),
+    ])
+
+    const context = buildLocalAIContext(
+      [
+        questionPart(
+          '<mention-date start="2026-01-01T00:00:00+00:00" end="2026-01-02T00:00:00+00:00" text="yesterday"></mention-date>',
+        ),
+      ],
+      { now },
+    )
+
+    expect(context?.entries.map((entry) => entry.id)).toEqual(["b", "a"])
+  })
+
+  test("shares the text budget between the entries of a timeline", () => {
+    setLocalAIContextBudget({ maxEntries: 2, maxCharsPerEntry: 1500, maxTotalChars: 100 })
+    setEntries([
+      createEntry("one", {
+        publishedAt: new Date("2026-01-02T09:00:00.000Z"),
+        content: "x".repeat(200),
+      }),
+      createEntry("two", {
+        publishedAt: new Date("2026-01-02T08:00:00.000Z"),
+        content: "y".repeat(200),
+      }),
+    ])
+
+    const context = buildLocalAIContext(
+      [questionPart('Today <mention-date text="24hoursago"></mention-date>')],
+      { now },
+    )
+
+    expect(context?.entries).toHaveLength(2)
+    for (const entry of context!.entries) {
+      expect(entry.content?.length).toBeLessThanOrEqual(100)
+      expect(entry.content).toContain("[truncated")
+    }
+  })
+
+  test("stays empty without a date mention or without entries in the window", () => {
+    setEntries([createEntry("old", { publishedAt: new Date("2025-01-01T09:00:00.000Z") })])
+
+    expect(buildLocalAIContext([questionPart("what did I miss?")], { now })).toBeNull()
+    expect(
+      buildLocalAIContext([questionPart('<mention-date text="24hoursago"></mention-date>')], {
+        now,
+      }),
+    ).toBeNull()
+  })
+})
+
+// The "Recommend feeds" shortcut expects a catalogue from the server, so the caller supplies one.
+describe("feed candidates", () => {
+  const feeds = [
+    { id: "feed-1", title: "Feed 1", description: "First feed", url: "https://example.com/f1" },
+  ]
+
+  beforeEach(() => {
+    resetLocalAI()
+    setEntries([])
+  })
+
+  test("travels with the request and is labelled as the selection", () => {
+    const context = buildLocalAIContext([], { feedCandidates: feeds })
+
+    expect(context).toEqual({
+      blocks: [{ type: "feedCandidates", value: "1" }],
+      entries: [],
+      feeds,
+    })
+  })
+
+  test("does not change the explicit context path", () => {
+    setEntries([createEntry("entry-1")])
+
+    const context = buildLocalAIContext([blockPart([mainEntryBlock("entry-1")])], {
+      feedCandidates: feeds,
+    })
+
+    expect(context?.feeds).toBeUndefined()
+    expect(context?.entries.map((entry) => entry.id)).toEqual(["entry-1"])
+  })
+})
+
+describe("parseMentionDateWindow", () => {
+  const now = dayjs("2026-01-02T12:00:00.000Z")
+
+  test("prefers the explicit range and falls back to the relative hint", () => {
+    const explicit = parseMentionDateWindow(
+      '<mention-date start="2025-12-27T00:00:00+00:00" end="2026-01-02T12:00:00+00:00" text="date:relative:last-7-days"></mention-date>',
+      now,
+    )
+    expect(explicit?.start.format("YYYY-MM-DD")).toBe("2025-12-27")
+
+    const relative = parseMentionDateWindow(
+      '<mention-date text="date:relative:last-7-days"></mention-date>',
+      now,
+    )
+    expect(relative?.start.format("YYYY-MM-DD")).toBe("2025-12-27")
+    expect(relative?.label).toBe("last 7 days")
+  })
+
+  test("understands yesterday and ignores everything else", () => {
+    expect(
+      parseMentionDateWindow('<mention-date text="yesterday"></mention-date>', now)?.end.format(
+        "YYYY-MM-DD",
+      ),
+    ).toBe("2026-01-01")
+    expect(parseMentionDateWindow("no mention here", now)).toBeNull()
+    expect(parseMentionDateWindow('<mention-date text="sometime"></mention-date>', now)).toBeNull()
   })
 })

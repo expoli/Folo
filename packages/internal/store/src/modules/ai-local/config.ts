@@ -1,3 +1,5 @@
+import type { LocalAIGatewaySettings } from "@follow/shared/settings/interface"
+
 /**
  * Local AI gateway configuration.
  *
@@ -37,7 +39,8 @@ const DISABLED_CONFIG: LocalAIConfig = { baseUrl: null, token: null }
 let config: LocalAIConfig = DISABLED_CONFIG
 let contextBudget: LocalAIContextBudget = { ...DEFAULT_LOCAL_AI_CONTEXT_BUDGET }
 
-const normalizeBaseUrl = (baseUrl: string | null | undefined) => {
+/** Trims a user typed gateway address and drops trailing slashes, so `baseUrl + path` stays clean. */
+export const normalizeLocalAIBaseUrl = (baseUrl: string | null | undefined) => {
   const normalized = baseUrl?.trim().replace(/\/+$/, "")
   return normalized ? normalized : null
 }
@@ -45,11 +48,27 @@ const normalizeBaseUrl = (baseUrl: string | null | undefined) => {
 /** Called once per app bootstrap. Passing `null` (or an empty `baseUrl`) disables local AI. */
 export const configureLocalAI = (next?: Partial<LocalAIConfig> | null): LocalAIConfig => {
   config = {
-    baseUrl: normalizeBaseUrl(next?.baseUrl),
+    baseUrl: normalizeLocalAIBaseUrl(next?.baseUrl),
     token: next?.token?.trim() || null,
   }
 
   return config
+}
+
+/**
+ * Maps the persisted `localGateway` settings (desktop / mobile) onto the gateway config.
+ * `enabled: false` or an empty address disables the gateway, which keeps Folo's own AI path.
+ * Fields are optional so settings stored before the gateway existed still resolve to `null`.
+ */
+export const resolveLocalAIConfig = (
+  settings?: Partial<LocalAIGatewaySettings> | null,
+): Partial<LocalAIConfig> | null => {
+  const baseUrl = normalizeLocalAIBaseUrl(settings?.baseUrl)
+  if (!settings?.enabled || !baseUrl) {
+    return null
+  }
+
+  return { baseUrl, token: settings.token?.trim() || null }
 }
 
 export const resetLocalAI = () => {

@@ -21,9 +21,19 @@
  * server-side chat history sync.
  */
 import { createServer } from "node:http"
+import { fileURLToPath } from "node:url"
 
 import { createOpenAI } from "@ai-sdk/openai"
 import { generateText, streamText } from "ai"
+
+// Load `tools/ai-gateway/.env` when it exists, so the gateway starts with the same configuration
+// however it is launched (no shell-specific `source`, which breaks in fish). Real environment
+// variables still take precedence over the file.
+try {
+  process.loadEnvFile(fileURLToPath(new URL("./.env", import.meta.url)))
+} catch {
+  // No .env file: fall back to the environment and the built-in defaults.
+}
 
 const DEFAULT_CHAT_SYSTEM_PROMPT = [
   "You are Folo's reading assistant. You help the user understand the articles, feeds and",
@@ -41,6 +51,15 @@ const DEFAULT_SUMMARY_SYSTEM_PROMPT = [
 const DEFAULT_TRANSLATION_SYSTEM_PROMPT = [
   "You are a professional translator. Translate faithfully, keep the original formatting,",
   "markdown and inline code, and never add explanations or notes.",
+].join(" ")
+
+// The local gateway has no access to Folo's backend, so a request without attached context really
+// has no entries. Say that instead of inventing a timeline or feed list.
+const NO_CONTEXT_NOTE = [
+  "This request carries no Folo entries, feed list or timeline: a self-hosted gateway cannot read",
+  "the user's Folo data. If the user asks about their timeline, feeds or articles, say you cannot",
+  "see them and that the content has to be attached to the conversation (Folo's context bar /",
+  "timeline summary), then answer from what they paste instead of inventing entries.",
 ].join(" ")
 
 const config = {
@@ -218,7 +237,9 @@ const toModelMessages = (messages = []) =>
 
 /** Renders the entries the client resolved from the chat context bar. */
 const formatLocalContext = (context) => {
-  if (!context || !Array.isArray(context.entries) || context.entries.length === 0) return ""
+  const contextEntries = Array.isArray(context?.entries) ? context.entries : []
+  const feeds = Array.isArray(context?.feeds) ? context.feeds : []
+  if (contextEntries.length === 0 && feeds.length === 0) return ""
 
   const blocks = Array.isArray(context.blocks)
     ? context.blocks
@@ -227,7 +248,7 @@ const formatLocalContext = (context) => {
         .join(", ")
     : ""
 
-  const entries = context.entries
+  const entries = contextEntries
     .map((entry, index) => {
       const header = [entry.title || "(untitled)", entry.url, entry.publishedAt]
         .filter(Boolean)
@@ -236,13 +257,25 @@ const formatLocalContext = (context) => {
     })
     .join("\n\n")
 
+  const feedSection = feeds
+    .map((feed, index) => {
+      const header = [feed.title || "(untitled)", feed.url].filter(Boolean).join(" — ")
+      return `### [F${index + 1}] ${header}\n${feed.description || "(no description)"}`
+    })
+    .join("\n\n")
+
   return [
-    "The user is currently looking at the following entries in Folo.",
+    contextEntries.length > 0
+      ? "The user is currently looking at the following entries in Folo."
+      : "",
+    feeds.length > 0
+      ? "Candidate feeds the user could subscribe to (pick only from this list):"
+      : "",
     blocks ? `Context selection: ${blocks}` : "",
-    "",
     entries,
+    feedSection,
   ]
-    .filter((line) => line !== undefined)
+    .filter((line) => line !== "")
     .join("\n")
 }
 
@@ -288,7 +321,38 @@ const handleChat = async (req, res, body) => {
   }
 
   const localContext = formatLocalContext(body.localAIContext)
-  const systemPrompt = [config.chatSystemPrompt, localContext].filter(Boolean).join("\n\n")
+  const contextBlocks = Array.isArray(body.localAIContext?.blocks)
+    ? body.localAIContext.blocks.length
+    : 0
+  const contextEntries = Array.isArray(body.localAIContext?.entries)
+    ? body.localAIContext.entries.length
+    : 0
+  const contextFeeds = Array.isArray(body.localAIContext?.feeds)
+    ? body.localAIContext.feeds.length
+    : 0
+  let contextChars = 0
+  for (const entry of body.localAIContext?.entries ?? []) {
+    if (typeof entry?.content === "string") contextChars += entry.content.length
+  }
+
+  console.log(
+    `[gateway] chat: model=${modelFor(body.model)} messages=${messages.length} ` +
+      `context=${contextBlocks} block(s)/${contextEntries} entrie(s)/${contextFeeds} feed(s)/${contextChars} chars`,
+  )
+  if (localContext === "") {
+    console.warn(
+      "[gateway] chat: no localAIContext arrived, so the model cannot see the Folo entries " +
+        "(the client attaches them only when the gateway is enabled and the chat has context blocks)",
+    )
+  }
+
+  const systemPrompt = [
+    config.chatSystemPrompt,
+    localContext,
+    localContext === "" ? NO_CONTEXT_NOTE : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n")
 
   const result = streamText({
     model: resolveModel(modelFor(body.model)),

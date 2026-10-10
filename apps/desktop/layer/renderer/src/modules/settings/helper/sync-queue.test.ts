@@ -321,6 +321,48 @@ describe("desktop spotlight setting sync", () => {
     })
   })
 
+  test("the gateway address and token never leave the device", async () => {
+    vi.useFakeTimers()
+
+    await settingSyncQueue.init()
+
+    setAISetting("localGateway", {
+      enabled: true,
+      baseUrl: "http://127.0.0.1:8788",
+      token: "token-1",
+    })
+
+    await vi.advanceTimersByTimeAsync(1000)
+    await Promise.resolve()
+
+    expect(settingsUpdateMock).not.toHaveBeenCalled()
+  })
+
+  test("the account's AI settings do not touch the local gateway", () => {
+    setAISetting("localGateway", {
+      enabled: true,
+      baseUrl: "http://127.0.0.1:8788",
+      token: "token-1",
+    })
+
+    settingSyncQueue.applyRemoteSettings({
+      code: 0,
+      settings: {
+        ai: { personalizePrompt: "Answer like a pirate." },
+      },
+      updated: {
+        ai: "2030-04-14T12:00:00.000Z",
+      },
+    })
+
+    expect(getAISettings().personalizePrompt).toBe("Answer like a pirate.")
+    expect(getAISettings().localGateway).toEqual({
+      enabled: true,
+      baseUrl: "http://127.0.0.1:8788",
+      token: "token-1",
+    })
+  })
+
   test("newer settings from the account replace the local ones except the device-local ones", () => {
     setGeneralSetting("actionLanguage", "ja")
     setGeneralSetting("language", "ja")

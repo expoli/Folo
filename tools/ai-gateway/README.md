@@ -17,14 +17,15 @@ LM Studio, Ollama, LiteLLM, an internal model gateway, …
 
 ## What runs locally, what does not
 
-| Feature                                                                             | Where it runs with this gateway                       |
-| ----------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| AI summary (article card, `AISummaryCard`)                                          | **your model**                                        |
-| AI translation (entry list + reading pane)                                          | **your model**                                        |
-| AI chat (sidebar panel, "Ask AI" about an article)                                  | **your model**                                        |
-| Model picker (`Settings → AI`)                                                      | model list from the gateway                           |
-| AI tasks / daily digest, TTS (read aloud), MCP services, chat memory & history sync | still Folo's server (needs its closed-source backend) |
-| Feeds, subscriptions, sync, login                                                   | still Folo's server                                   |
+| Feature                                                                             | Where it runs with this gateway                                  |
+| ----------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| AI summary (article card, `AISummaryCard`)                                          | **your model**                                                   |
+| AI translation (entry list + reading pane)                                          | **your model**                                                   |
+| AI chat (sidebar panel, "Ask AI" about an article)                                  | **your model**                                                   |
+| Built-in shortcuts ("Summarize timeline", "Recommend feeds")                        | **your model** — the client gathers the entries / feed catalogue |
+| Model picker (`Settings → AI`)                                                      | model list from the gateway                                      |
+| AI tasks / daily digest, TTS (read aloud), MCP services, chat memory & history sync | still Folo's server (needs its closed-source backend)            |
+| Feeds, subscriptions, sync, login                                                   | still Folo's server                                              |
 
 ## 1. Run the gateway
 
@@ -32,9 +33,12 @@ LM Studio, Ollama, LiteLLM, an internal model gateway, …
 cd tools/ai-gateway
 npm install                 # ai@7.0.109 + @ai-sdk/openai@4.0.9 (pinned to the client's AI SDK)
 cp .env.example .env        # then edit AI_BASE_URL / AI_API_KEY / AI_MODEL
-set -a && . ./.env && set +a
 npm start                   # http://127.0.0.1:8788
 ```
+
+`.env` is loaded by `server.mjs` itself (`process.loadEnvFile`), so there is no `source` / `export`
+step — it behaves the same in bash, zsh and fish. Real environment variables still take precedence
+over the file, which is how the verify step at the bottom injects the mock upstream.
 
 `GET /health` reports the configured upstream and models. Point `AI_BASE_URL` at a local runtime
 to keep content on your machine:
@@ -60,14 +64,21 @@ parts …_` note so a merged summary is not mistaken for a partial one;
 
 ## 2. Point the client at the gateway
 
-Desktop (Electron / web renderer) — `apps/desktop/.env`:
+**Desktop / web renderer — Settings → AI → Local AI Gateway.** Switch it on, paste the address
+(and the token when `GATEWAY_TOKEN` is set) and use **Test connection** before saving. A saved
+change applies to the next AI request — summary, translation or chat — without restarting the
+app. The address and the token are device-local: they are never synced to your account.
+
+`apps/desktop/.env` only seeds the first run, i.e. the values a fresh install starts with. Once
+the gateway section has been saved, the saved settings win:
 
 ```bash
 VITE_LOCAL_AI_GATEWAY_URL=http://127.0.0.1:8788
 # VITE_LOCAL_AI_TOKEN=change-me        # only if GATEWAY_TOKEN is set
 ```
 
-Mobile (Expo) — `apps/mobile/.env` (or the shell that starts Metro):
+Mobile (Expo) — `apps/mobile/.env` (or the shell that starts Metro). Mobile has no settings UI
+for the gateway yet, so the env is still the only way there:
 
 ```bash
 EXPO_PUBLIC_LOCAL_AI_GATEWAY_URL=http://192.168.1.20:8788   # LAN address of the machine running the gateway
@@ -75,9 +86,9 @@ EXPO_PUBLIC_LOCAL_AI_GATEWAY_URL=http://192.168.1.20:8788   # LAN address of the
 ```
 
 Then start the app normally (`pnpm --filter Folo run dev:electron` for the desktop app, or
-`pnpm --filter @follow/mobile run android` / `ios`). When `*_LOCAL_AI_GATEWAY_URL` is empty the
-build behaves exactly like upstream Folo: every AI request goes back to `api.folo.is`, so you can
-keep both paths in one binary.
+`pnpm --filter @follow/mobile run android` / `ios`). When the gateway is off — no address, or the
+switch is disabled — the build behaves exactly like upstream Folo: every AI request goes back to
+`api.folo.is`, so you can keep both paths in one binary.
 
 Restart is required after changing the env: the config is read at app bootstrap.
 
@@ -129,26 +140,29 @@ rejected"). Plain `GET /health` stays instant and never touches the model.
 
 ## Client changes in this fork
 
-| File                                                                             | Change                                                                                    |
-| -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `packages/internal/store/src/modules/ai-local/config.ts`                         | gateway config registry (`configureLocalAI`, `isLocalAIEnabled`)                          |
-| `packages/internal/store/src/modules/ai-local/client.ts`                         | summary / translation / chat-config calls against the gateway                             |
-| `packages/internal/store/src/modules/summary/store.ts`                           | summary goes through the gateway when enabled                                             |
-| `packages/internal/store/src/modules/translation/store.ts`                       | translation batch goes through the gateway; the free-plan block no longer applies locally |
-| `apps/desktop/…/ai-chat/store/transport.ts`                                      | chat transport (`api` + `credentials` + gateway bearer token) switches to the gateway     |
-| `apps/desktop/…/ai-chat/hooks/useAIConfiguration.ts`                             | model picker reads the gateway model list                                                 |
-| `apps/desktop/…/ai-chat/utils/local-ai-context.ts` + `chat-core/chat-actions.ts` | resolves the context blocks to entry text, within the gateway's context budget            |
-| `apps/desktop/…/ai-chat-session/*`, `…/ai-chat/services/index.ts`                | local sessions stay local: no sync, unread query, or remote delete                        |
-| `apps/desktop/…/entry-column/item.tsx`, `entry-content/hooks.tsx`                | translation prefetch is not gated on the paid plan when the gateway is used               |
-| `apps/desktop/layer/renderer/src/main.tsx`, `apps/mobile/src/main.tsx`           | wire the env vars into `configureLocalAI`                                                 |
+| File                                                                             | Change                                                                                                                                          |
+| -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `packages/internal/store/src/modules/ai-local/config.ts`                         | gateway config registry (`configureLocalAI`, `isLocalAIEnabled`)                                                                                |
+| `packages/internal/store/src/modules/ai-local/client.ts`                         | summary / translation / chat-config calls against the gateway                                                                                   |
+| `packages/internal/store/src/modules/summary/store.ts`                           | summary goes through the gateway when enabled                                                                                                   |
+| `packages/internal/store/src/modules/translation/store.ts`                       | translation batch goes through the gateway; the free-plan block no longer applies locally                                                       |
+| `apps/desktop/…/ai-chat/store/transport.ts`                                      | chat transport (`api` + `credentials` + gateway bearer token) switches to the gateway                                                           |
+| `apps/desktop/…/ai-chat/hooks/useAIConfiguration.ts`                             | model picker reads the gateway model list                                                                                                       |
+| `apps/desktop/…/ai-chat/utils/local-ai-context.ts` + `chat-core/chat-actions.ts` | resolves the context blocks to entry text, gathers the timeline a date mention points at, and attaches the feed catalogue for "Recommend feeds" |
+| `apps/desktop/…/ai-chat-session/*`, `…/ai-chat/services/index.ts`                | local sessions stay local: no sync, unread query, or remote delete                                                                              |
+| `apps/desktop/…/entry-column/item.tsx`, `entry-content/hooks.tsx`                | translation prefetch is not gated on the paid plan when the gateway is used                                                                     |
+| `apps/desktop/layer/renderer/src/main.tsx`, `apps/mobile/src/main.tsx`           | wire the env vars into `configureLocalAI`                                                                                                       |
 
 ## Limits & caveats
 
 - **The Folo account is still required** for feeds/content: the backend is closed source, so this
   only replaces the AI half of the service.
 - **No server-side tools**: Folo's AI can search your feeds, connect MCP servers and remember past
-  chats. Those tools live on Folo's servers; the gateway answers from the chat history plus the
-  entries the client attaches to the request.
+  chats. Those tools live on Folo's servers, so the gateway answers from the entries the client
+  attaches. Folo's built-in shortcuts expect server-side data as well: the client now supplies the
+  timeline entries a `<mention-date>` window points at and the trending feed catalogue for
+  "Recommend feeds", but anything else that needs server-side tools (feed search, MCP, memory)
+  still cannot work locally.
 - **Auto-generated chat titles** arrive as a `data-generated-title` chunk from Folo's server and are
   not implemented here — chats keep their default/edited title.
 - **Stream resumption** is a no-op (`204`): restarting the app mid-answer cannot continue the

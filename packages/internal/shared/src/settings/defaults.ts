@@ -177,6 +177,14 @@ export const defaultAISettings: AISettings = {
     enabled: false,
     providers: [],
   },
+
+  // Self-hosted AI gateway. The desktop build seeds it from `VITE_LOCAL_AI_GATEWAY_URL` /
+  // `VITE_LOCAL_AI_TOKEN`; both values stay on the device.
+  localGateway: {
+    enabled: false,
+    baseUrl: "",
+    token: "",
+  },
 }
 
 export const defaultSettings = {

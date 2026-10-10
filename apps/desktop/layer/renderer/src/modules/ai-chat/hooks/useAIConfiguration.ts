@@ -1,14 +1,16 @@
 import { fetchLocalAIConfig } from "@follow/store/ai-local/client"
-import { isLocalAIEnabled } from "@follow/store/ai-local/config"
 import { useQuery } from "@tanstack/react-query"
 
 import { followApi } from "~/lib/api-client"
+import { useLocalAIConfig } from "~/lib/local-ai-gateway"
 
 export const useAIConfiguration = () => {
-  const useLocalAI = isLocalAIEnabled()
+  // Reactive, so the model catalogue is loaded again from a newly saved gateway address.
+  const { baseUrl } = useLocalAIConfig()
+  const useLocalAI = baseUrl !== null
 
   return useQuery({
-    queryKey: ["aiConfiguration", useLocalAI],
+    queryKey: ["aiConfiguration", useLocalAI, baseUrl],
     queryFn: async () => {
       // The model list of a self-hosted gateway replaces Folo's paid model catalogue.
       if (useLocalAI) {

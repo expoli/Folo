@@ -1,3 +1,4 @@
+import { DEFAULT_RECOMMEND_FEEDS_SHORTCUT_ID } from "@follow/shared/settings/defaults"
 import { isLocalAIEnabled } from "@follow/store/ai-local/config"
 import { autoBindThis } from "@follow/utils/bind-this"
 import { createDesktopAPIHeaders } from "@follow/utils/headers"
@@ -7,12 +8,62 @@ import { merge } from "es-toolkit/compat"
 import { nanoid } from "nanoid"
 import type { StateCreator } from "zustand"
 
+import { followClient } from "~/lib/api-client"
+
 import { AIPersistService } from "../../services"
+import type { LocalAIFeedCandidate } from "../../utils/local-ai-context"
 import { buildLocalAIContext, localAIContextQuestion } from "../../utils/local-ai-context"
+import { extractShortcutIdFromMessageParts } from "../../utils/shortcut"
 import { createChatTitleHandler, createChatTransport } from "../transport"
 import type { BizUIMessage, SendingUIMessage } from "../types"
 import { ZustandChat } from "./chat-instance"
 import type { ChatSlice } from "./types"
+
+const FEED_CANDIDATE_LIMIT = 40
+const FEED_CANDIDATE_TTL = 10 * 60 * 1000
+
+/** Fetched per chat: the "recommend feeds" flow keeps asking on later turns. */
+const feedCandidateCache = new Map<string, { at: number; feeds: LocalAIFeedCandidate[] }>()
+
+/** Folo's "Recommend feeds" shortcut expects the server to supply the catalogue to pick from. */
+const usesFeedRecommendation = (message: { id?: string; parts?: BizUIMessage["parts"] }) => {
+  if (message.id?.startsWith(`${DEFAULT_RECOMMEND_FEEDS_SHORTCUT_ID}-`)) return true
+  if (!Array.isArray(message.parts)) return false
+
+  return (
+    extractShortcutIdFromMessageParts(message.parts as SendingUIMessage["parts"]) ===
+    DEFAULT_RECOMMEND_FEEDS_SHORTCUT_ID
+  )
+}
+
+const asText = (value: unknown) => (typeof value === "string" && value.trim() ? value : null)
+
+const loadFeedCandidates = async (chatId: string): Promise<LocalAIFeedCandidate[]> => {
+  const cached = feedCandidateCache.get(chatId)
+  if (cached && Date.now() - cached.at < FEED_CANDIDATE_TTL) return cached.feeds
+
+  try {
+    const { data } = await followClient.api.trending.getFeeds({ limit: FEED_CANDIDATE_LIMIT })
+    const feeds = (data ?? [])
+      .map((item) => ({
+        id: asText(item.feed?.id) ?? asText(item.feedId) ?? "",
+        title: asText(item.feed?.title),
+        description: asText(item.feed?.description),
+        url: asText(item.feed?.url),
+      }))
+      .filter((feed) => feed.id !== "")
+      .slice(0, FEED_CANDIDATE_LIMIT)
+
+    feedCandidateCache.set(chatId, { at: Date.now(), feeds })
+    return feeds
+  } catch (error) {
+    console.warn(
+      "[local-ai] could not load feed candidates for the recommend-feeds shortcut",
+      error,
+    )
+    return []
+  }
+}
 
 export class ChatSliceActions {
   // Hold reference to the most recently constructed (active) ChatSliceActions instance
@@ -34,6 +85,24 @@ export class ChatSliceActions {
    */
   static setActiveInstance(instance: ChatSliceActions | null) {
     this._current = instance
+  }
+
+  // Every mounted chat, so a settings change repoints all of them, not only the last mount.
+  private static _instances = new Set<ChatSliceActions>()
+
+  static registerInstance(instance: ChatSliceActions) {
+    this._instances.add(instance)
+  }
+
+  static unregisterInstance(instance: ChatSliceActions) {
+    this._instances.delete(instance)
+  }
+
+  /** Rebuilds the transport of every mounted chat, e.g. after the gateway settings changed. */
+  static recreateTransportEverywhere() {
+    for (const instance of this._instances) {
+      instance.recreateTransport()
+    }
   }
 
   private chatInstance: ZustandChat
@@ -223,12 +292,13 @@ export class ChatSliceActions {
             >[0])
           : (message as Parameters<typeof this.chatInstance.sendMessage>[0])
 
-      // A self-hosted gateway cannot resolve the ids in the context blocks, so send the
-      // referenced entries (and their text) along with the request.
+      // A self-hosted gateway cannot resolve the ids in the context blocks, nor the timeline a
+      // shortcut points at, so everything it needs travels with the request.
       const localAIContext =
         isLocalAIEnabled() && messageObj?.parts
-          ? buildLocalAIContext(messageObj.parts as BizUIMessage["parts"], {
-              question: localAIContextQuestion(messageObj.parts as BizUIMessage["parts"]),
+          ? await this.createLocalAIContext({
+              id: messageObj.id,
+              parts: messageObj.parts as BizUIMessage["parts"],
             })
           : null
 
@@ -248,20 +318,37 @@ export class ChatSliceActions {
     }
   }
 
+  /**
+   * Builds the payload a local gateway needs: the entries behind the context blocks, the timeline
+   * a date mention points at, and the feed catalogue the "recommend feeds" shortcut picks from.
+   */
+  private createLocalAIContext = async (message: { id?: string; parts: BizUIMessage["parts"] }) => {
+    if (!isLocalAIEnabled()) return null
+
+    const question = localAIContextQuestion(message.parts)
+    // The catalogue has to stay attached for the follow-up turns of that conversation too.
+    const needsFeedCandidates = [...this.getMessages(), message].some(usesFeedRecommendation)
+    const feedCandidates = needsFeedCandidates
+      ? await loadFeedCandidates(this.get().chatId)
+      : undefined
+
+    return buildLocalAIContext(message.parts, { question, feedCandidates })
+  }
+
   /** The user message a regenerate request belongs to, so the local context matches it. */
-  private getUserMessageParts(messageId: string): BizUIMessage["parts"] | null {
+  private getUserMessage(messageId: string): BizUIMessage | null {
     const messages = this.getMessages()
     const index = messages.findIndex((message) => message.id === messageId)
 
     // `messageId` normally points at the assistant answer; the question is the user message
     // before it (or the message itself when the user message is regenerated).
     if (index !== -1 && messages[index]?.role === "user") {
-      return messages[index].parts
+      return messages[index]
     }
 
     for (let i = (index === -1 ? messages.length : index) - 1; i >= 0; i--) {
       const message = messages[i]
-      if (message?.role === "user") return message.parts
+      if (message?.role === "user") return message
     }
 
     return null
@@ -271,10 +358,8 @@ export class ChatSliceActions {
     try {
       // Regenerating must ship the same local context as the original send; the gateway has no
       // server-side history to replay it from.
-      const parts = isLocalAIEnabled() ? this.getUserMessageParts(messageId) : null
-      const localAIContext = parts
-        ? buildLocalAIContext(parts, { question: localAIContextQuestion(parts) })
-        : null
+      const userMessage = isLocalAIEnabled() ? this.getUserMessage(messageId) : null
+      const localAIContext = userMessage ? await this.createLocalAIContext(userMessage) : null
 
       // Use the AI SDK's regenerate method
       const finalOptions = merge(
@@ -312,6 +397,45 @@ export class ChatSliceActions {
     this.chatInstance.chatState.status = "ready"
     // Reset title
     this.setCurrentTitle(undefined)
+  }
+
+  private isStreaming = () => {
+    const { status } = this.get()
+    return status === "streaming" || status === "submitted"
+  }
+
+  private applyTransportRebuild = () => {
+    this.chatInstance.setTransport(
+      createChatTransport({
+        titleHandler: this.createTransportTitleHandler(this.get().chatId),
+      }),
+    )
+  }
+
+  /**
+   * Points the running chat at the current endpoint, e.g. after the gateway settings changed.
+   * A stream that is already running keeps the transport it started with, so the rebuild waits
+   * for it to finish instead of cutting the answer off; the next request then uses the new one.
+   */
+  private pendingTransportRebuild = false
+
+  recreateTransport = () => {
+    if (!this.isStreaming()) {
+      this.applyTransportRebuild()
+      return
+    }
+
+    // Rebuilds scheduled while a stream runs all build the same transport, so keep one.
+    if (this.pendingTransportRebuild) return
+    this.pendingTransportRebuild = true
+
+    const unsubscribe = this.params[2].subscribe(() => {
+      if (this.isStreaming()) return
+
+      this.pendingTransportRebuild = false
+      unsubscribe()
+      this.applyTransportRebuild()
+    })
   }
 
   newChat = async () => {

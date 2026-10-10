@@ -207,6 +207,17 @@ export interface MCPService {
   lastUsed: string | null
 }
 
+/**
+ * Self-hosted AI gateway (see `tools/ai-gateway`). Device-local: the address and the token are
+ * never synced to the account, so a second device has to configure them again.
+ */
+export interface LocalAIGatewaySettings {
+  enabled: boolean
+  /** Gateway origin without a trailing slash, e.g. `http://127.0.0.1:8788`. Empty disables it. */
+  baseUrl: string
+  token: string
+}
+
 export interface AISettings {
   personalizePrompt: string
   aiTimelinePrompt: string
@@ -220,6 +231,8 @@ export interface AISettings {
   autoScrollWhenStreaming: boolean
 
   byok: UserByokSettings
+
+  localGateway: LocalAIGatewaySettings
 }
 
 export type ByokProviderName = "openai" | "google" | "vercel-ai-gateway" | "openrouter"

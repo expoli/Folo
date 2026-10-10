@@ -6,6 +6,7 @@ import { setAISetting, useAISettingValue } from "~/atoms/settings/ai"
 import { createDefineSettingItem } from "../helper/builder"
 import { createSettingBuilder } from "../helper/setting-builder"
 import { ByokSection } from "./ai/byok"
+import { LocalGatewaySection } from "./ai/local-gateway"
 import { MCPServicesSection } from "./ai/mcp/MCPServicesSection"
 import { PanelStyleSection } from "./ai/PanelStyleSection"
 import { PersonalizePromptSection } from "./ai/PersonalizePromptSection"
@@ -19,6 +20,7 @@ const defineSettingItem = createDefineSettingItem("ai", useAISettingValue, setAI
 export const AI_SETTING_SECTION_IDS = {
   shortcuts: "settings-ai-shortcuts",
   tasks: "settings-ai-tasks",
+  localGateway: "settings-ai-local-gateway",
 } as const
 
 export const SettingAI = () => {
@@ -75,6 +77,13 @@ export const SettingAI = () => {
             value: t("byok.title"),
           },
           ByokSection,
+
+          {
+            type: "title",
+            value: t("settings.localGateway.title"),
+            id: AI_SETTING_SECTION_IDS.localGateway,
+          },
+          LocalGatewaySection,
 
           {
             type: "title",

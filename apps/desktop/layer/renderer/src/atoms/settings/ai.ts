@@ -1,4 +1,5 @@
 import { createSettingAtom } from "@follow/atoms/helper/setting.js"
+import { env } from "@follow/shared/env.desktop"
 import { defaultAISettings } from "@follow/shared/settings/defaults"
 import type {
   AISettings,
@@ -113,6 +114,12 @@ export const createDefaultSettings = (): WebAISettings => ({
   shortcuts: normalizeShortcuts(defaultAISettings.shortcuts),
   panelStyle: AIChatPanelStyle.Floating,
   showSplineButton: true,
+  // The build-time env only seeds the first run; Settings → AI overrides it at runtime.
+  localGateway: {
+    enabled: Boolean(env.VITE_LOCAL_AI_GATEWAY_URL),
+    baseUrl: env.VITE_LOCAL_AI_GATEWAY_URL ?? "",
+    token: env.VITE_LOCAL_AI_TOKEN ?? "",
+  },
 })
 
 export const {
@@ -126,7 +133,7 @@ export const {
   settingAtom: __aiSettingAtom,
 } = createSettingAtom("ai", createDefaultSettings)
 /** Device-local AI settings: every other AI setting syncs to the account. */
-export const aiLocalOnlyKeys: (keyof AISettings)[] = []
+export const aiLocalOnlyKeys: (keyof AISettings)[] = ["localGateway"]
 
 export const syncServerShortcuts = (
   serverShortcuts: readonly ServerShortcutConfig[] | null | undefined,
