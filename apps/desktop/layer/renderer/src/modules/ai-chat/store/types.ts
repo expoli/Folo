@@ -67,6 +67,8 @@ export type BizUIDataTypes = {
    * while a wide summary is being prepared, with a stable id so each update replaces the last.
    */
   "reduce-progress": {
+    /** Which part of the pre-pass reports: reading the articles, or summarizing them. */
+    phase?: "fetch" | "summarise"
     done: number
     total: number
   }

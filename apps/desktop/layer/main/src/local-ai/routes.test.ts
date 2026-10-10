@@ -38,6 +38,15 @@ const readHeaders = (headers: HeadersInit | undefined) => {
   return headers as Record<string, string>
 }
 
+// Only the page fetcher is stubbed: the fetch pass itself (its targets, its caps, its results)
+// stays the real code, and every other test sends no  flag at all.
+const pageFetch = vi.hoisted(() => ({ fetchArticleText: vi.fn() }))
+
+vi.mock("./article-text", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./article-text")>()
+  return { ...actual, fetchArticleText: pageFetch.fetchArticleText }
+})
+
 const stubUpstream = (handler: (call: StubbedCall) => Response | Promise<Response>) => {
   const calls: StubbedCall[] = []
 
@@ -92,6 +101,7 @@ const sseStream = (text: string) => {
 beforeEach(() => {
   // The model list is cached between requests; cases have to start from a clean slate.
   resetModelListCache()
+  pageFetch.fetchArticleText.mockReset().mockResolvedValue("Fetched article text. ".repeat(80))
 })
 
 afterEach(() => {
@@ -488,6 +498,46 @@ describe("routeLocalAIRequest", () => {
     )
     expect(system?.content).toContain("9 summarised from their text")
     expect(system?.content).not.toContain("(no text attached)")
+  })
+
+  test("reads the articles of a summary that only carry an excerpt", async () => {
+    const calls = stubUpstream((call) =>
+      call.body?.stream ? sseStream("Summary") : completion('{"1": "A note from the full text"}'),
+    )
+
+    const response = await route({
+      path: "/ai/chat",
+      body: JSON.stringify({
+        messages: [{ role: "user", parts: [{ type: "text", text: "Summarize today" }] }],
+        localAIContext: {
+          fetchBodies: true,
+          coverage: { matched: 2, window: "last 24 hours" },
+          entries: [
+            { title: "Excerpt only", url: "https://example.com/a", body: "One sentence." },
+            { title: "Long already", url: "https://example.com/b", body: "x".repeat(3000) },
+          ],
+        },
+      }),
+    })
+
+    const body = await response.text()
+    expect(body).toContain("data-reduce-progress")
+    expect(body).toContain("Summary")
+
+    // Only the entry whose text was an excerpt is fetched, and the pass reports it.
+    expect(pageFetch.fetchArticleText).toHaveBeenCalledTimes(1)
+    expect(pageFetch.fetchArticleText).toHaveBeenCalledWith(
+      "https://example.com/a",
+      expect.anything(),
+    )
+
+    const system = (calls.at(-1)!.body?.messages as { role: string; content: string }[]).find(
+      (message) => message.role === "system",
+    )
+    expect(system?.content).toContain("A note from the full text")
+    expect(system?.content).toContain("1 summarised from their text")
+    // The fetched article replaced the excerpt the entry arrived with.
+    expect(system?.content).not.toContain("One sentence.")
   })
 
   test("reports how far the pre-pass is instead of staying quiet", async () => {

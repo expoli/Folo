@@ -129,6 +129,23 @@ from their text …`, and those articles count as read instead of listed by titl
 its copy in `server.mjs` (tuned by the `AI_REDUCE_*` variables above), the app keeps its own in
 `apps/desktop/layer/main/src/local-ai/reduce.ts` (tuned in Settings → AI → Advanced).
 
+**Built-in direct mode also fetches what it reads.** A summary is only as good as the text it gets,
+and an entry that was never opened carries the excerpt its feed published. When the client marks a
+summary (`fetchBodies`), the app fetches the pages of the entries whose text is shorter than 1 200
+characters — up to 40 of them, four at a time, 12 s per page — parses them with
+`@follow-app/readability` through Chromium's network stack, and uses the article in place of the
+excerpt (a verbatim entry keeps its place in the prompt, cut to its share of the budget). The pass
+is best effort: a page that cannot be read leaves its entry as it was, the answer still streams,
+and the log line `[local-ai] fetch: x of y article text(s) read (n unreachable)` says what happened.
+The gateway does not fetch pages yet — it sends what the client attached.
+
+That pass is the only place where the app fetches a URL **without a user asking for that page**: the
+URLs come from the feeds, up to 40 per request, through Chromium's network stack and therefore with
+the session's cookies, and the parsed text is then sent to the configured model endpoint — including
+when the URL points at an intranet or loopback host. The reader does the same fetch when a page is
+opened, but only then. Restricting the hosts this pass may touch (or making it opt-in per request)
+is a deliberate decision still open; nothing outside the model request is stored.
+
 ## 3. Verify
 
 ```bash
@@ -192,6 +209,7 @@ purpose, so the two paths can be compared line by line.
 | Endpoint                                                                          | `AI_BASE_URL`                                                  | one OpenAI-compatible endpoint per install                                                                |
 | Extra tuning (`AI_SUMMARY_CHUNK_CHARS`, `AI_HEADERS`, translation concurrency, …) | yes                                                            | no: the defaults are compiled in                                                                          |
 | Wide selections (a summary of a whole day)                                        | summarized into notes first (`reduce` pre-pass)                | same pre-pass, with the knobs in Settings → AI → Advanced                                                 |
+| Bodies of unopened articles                                                       | whatever the client attached                                   | fetched and parsed first (`@follow-app/readability`, best effort, bounded)                                |
 | Translation delivery                                                              | NDJSON streamed line by line, so entries appear as they finish | buffered: IPC answers a batch in one piece, so the translations appear together                           |
 | System proxy                                                                      | follows `HTTP(S)_PROXY` of its shell                           | follows the same proxy as the rest of the app (Chromium's `net.fetch`)                                    |
 

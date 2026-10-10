@@ -117,6 +117,7 @@
   "chat.reasoning.reason": "Reason:",
   "chat.reasoning.thinking": "Thinking:",
   "chat.reasoning.title": "Reasoning",
+  "chat.reduce_fetching": "Reading the articles of this summary ({{done}}/{{total}})…",
   "chat.reduce_progress": "Summarising the articles of this summary ({{done}}/{{total}})…",
   "chat.smart_sidebar.description": "Get insights about this article",
   "chat.smart_sidebar.open": "Open AI Chat",

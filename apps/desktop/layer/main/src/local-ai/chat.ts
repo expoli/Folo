@@ -3,6 +3,13 @@ import { createUIMessageStream, createUIMessageStreamResponse, generateText, str
 import { app } from "electron"
 import { join } from "pathe"
 
+import {
+  applyFetchedTexts,
+  collectFetchTargets,
+  fetchArticleText,
+  fetchArticleTexts,
+  promptText,
+} from "./article-text"
 import type { LocalAIContext } from "./context"
 import {
   applyEntryNotes,
@@ -16,7 +23,12 @@ import { jsonResponse } from "./http"
 import type { NotesCache } from "./notes-cache"
 import { createNotesCache } from "./notes-cache"
 import { DEFAULT_CHAT_SYSTEM_PROMPT } from "./prompts"
-import { createDirectModel, directCallOptions, resolveModelId } from "./provider"
+import {
+  createDirectModel,
+  DIRECT_CONTEXT_BUDGET,
+  directCallOptions,
+  resolveModelId,
+} from "./provider"
 import { summarizeEntries } from "./reduce"
 
 /** Longest note attached per article, and for all notes together: the prompt still has a size. */
@@ -101,6 +113,76 @@ export const createChatStreamResponse = async (params: {
     onError: streamError,
     execute: async ({ writer }) => {
       let context = body.localAIContext ?? null
+
+      // A summary is only as good as what it reads. The client marks the requests whose articles
+      // are worth fetching (the ones it also sends for the reduce pre-pass); the pass is bounded,
+      // best effort, and every failure leaves the entry with the text it arrived with.
+      if (context?.fetchBodies === true && Array.isArray(context.entries)) {
+        // Bound once: the narrowing of `context` does not survive into the callbacks below.
+        const contextEntries = context.entries
+        const targets = collectFetchTargets(contextEntries)
+        if (targets.length > 0) {
+          console.log(
+            `[local-ai] fetch: reading ${targets.length} article(s) that only carry an excerpt…`,
+          )
+          const fetched = await fetchArticleTexts({
+            targets,
+            // Passed in rather than defaulted, so the fetcher of one request is one visible thing.
+            fetchText: fetchArticleText,
+            signal: abortSignal,
+            log: console.log,
+            onProgress: (done, total) => {
+              writer.write({
+                type: "data-reduce-progress",
+                id: "reduce-progress",
+                data: { phase: "fetch", done, total },
+              })
+            },
+          })
+
+          // A verbatim entry keeps its place in the prompt, within its share of what is left of
+          // the announced budget: what the entries that were not fetched already carry is spent.
+          const targetIndexes = new Set(targets.map((target) => target.index))
+          const isFetchedVerbatim = (entry: (typeof contextEntries)[number], position: number) =>
+            typeof entry.content === "string" && !!entry.content && targetIndexes.has(position + 1)
+          const carried = contextEntries.reduce(
+            (sum, entry, position) =>
+              typeof entry.content === "string" && entry.content && !targetIndexes.has(position + 1)
+                ? sum + entry.content.length
+                : sum,
+            0,
+          )
+          const fetchedVerbatim = contextEntries.filter(isFetchedVerbatim).length
+          const verbatimChars = Math.min(
+            DIRECT_CONTEXT_BUDGET.maxCharsPerEntry,
+            Math.floor(
+              Math.max(0, DIRECT_CONTEXT_BUDGET.maxTotalChars - carried) /
+                Math.max(1, fetchedVerbatim),
+            ),
+          )
+          const applied = applyFetchedTexts(contextEntries, fetched.texts, { verbatimChars })
+          if (applied > 0) {
+            console.log(`[local-ai] fetch: ${applied} entrie(s) now carry their article text`)
+          }
+        }
+      }
+
+      // The prompt reads sentences, not markup: an article that was opened earlier arrives as HTML.
+      if (context?.entries) {
+        context = {
+          ...context,
+          entries: context.entries.map((entry) => ({
+            ...entry,
+            ...(typeof entry.content === "string" && entry.content
+              ? { content: promptText(entry.content) }
+              : {}),
+            ...(typeof entry.body === "string" && entry.body
+              ? { body: promptText(entry.body) }
+              : {}),
+          })),
+        }
+      }
+
       const pending = pendingEntryTexts(context)
       if (pending.length > 0) {
         const startedAt = Date.now()
@@ -124,7 +206,7 @@ export const createChatStreamResponse = async (params: {
             writer.write({
               type: "data-reduce-progress",
               id: "reduce-progress",
-              data: { done, total },
+              data: { phase: "summarise", done, total },
             })
           },
         })

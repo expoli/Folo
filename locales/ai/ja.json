@@ -117,6 +117,7 @@
   "chat.reasoning.reason": "推論：",
   "chat.reasoning.thinking": "思考中：",
   "chat.reasoning.title": "推論",
+  "chat.reduce_fetching": "記事の本文を取得しています（{{done}}/{{total}}）…",
   "chat.reduce_progress": "記事を要約しています（{{done}}/{{total}}）…",
   "chat.smart_sidebar.description": "この記事についての洞察を得る",
   "chat.smart_sidebar.open": "AI チャットを開く",

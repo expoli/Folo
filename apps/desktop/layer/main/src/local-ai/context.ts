@@ -91,6 +91,8 @@ export interface LocalAIContext {
   feeds?: ContextFeed[]
   blocks?: ContextBlock[]
   coverage?: ContextCoverage
+  /** The client allows the entries of a summary to be fetched from their pages before it runs. */
+  fetchBodies?: unknown
 }
 
 interface ContextCoverage {

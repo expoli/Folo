@@ -15,7 +15,9 @@ import { AIMarkdownStreamingMessage } from "./AIMarkdownMessage"
 import { ToolInvocationComponent } from "./ToolInvocationComponent"
 
 /** The pre-pass reports how far it is as a data part, so the panel is not quiet while it runs. */
-type ReduceProgressUIPart = DataUIPart<{ "reduce-progress": { done: number; total: number } }>
+type ReduceProgressUIPart = DataUIPart<{
+  "reduce-progress": { phase?: "fetch" | "summarise"; done: number; total: number }
+}>
 
 const LazyAIDisplayFlowPart = React.lazy(() =>
   import("../displays/AIDisplayFlowPart").then((mod) => ({ default: mod.AIDisplayFlowPart })),
@@ -118,14 +120,19 @@ export const AIMessageParts: React.FC<AIMessagePartsProps> = React.memo(
             case "data-reduce-progress": {
               if (!shouldMessageAnimation) return null
 
-              const { done, total } = (part as ReduceProgressUIPart).data
+              const { phase, done, total } = (part as ReduceProgressUIPart).data
               return (
                 <div
                   key={partKey}
                   className="my-2 flex items-center gap-2 text-sm text-text-secondary"
                 >
                   <i className="i-mgc-loading-3-cute-re size-4 animate-spin" />
-                  <span>{t("chat.reduce_progress", { done, total })}</span>
+                  <span>
+                    {t(phase === "fetch" ? "chat.reduce_fetching" : "chat.reduce_progress", {
+                      done,
+                      total,
+                    })}
+                  </span>
                 </div>
               )
             }

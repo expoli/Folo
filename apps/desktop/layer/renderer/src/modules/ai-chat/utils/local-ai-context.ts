@@ -47,6 +47,11 @@ export interface LocalAIContext {
   /** Only set for feed-recommendation prompts. */
   feeds?: LocalAIFeedCandidate[]
   /**
+   * Whether the receiving side may fetch the articles themselves before summarizing. Only a
+   * summary asks for it: a chat keeps to what the local database already holds.
+   */
+  fetchBodies?: boolean
+  /**
    * How much of the selection made it into `entries`. A summary of "today" must not read as if it
    * covered the day when the budget only carried the newest handful of articles.
    */
@@ -471,6 +476,7 @@ export const buildLocalAIContext = (
       ],
       entries: timeline?.entries ?? [],
       ...(timeline ? { coverage: { matched: timeline.matched, window: timeline.label } } : {}),
+      ...(reduce && timeline ? { fetchBodies: true } : {}),
       ...(feeds ? { feeds } : {}),
     }
   }
@@ -550,5 +556,6 @@ export const buildLocalAIContext = (
     blocks,
     entries,
     coverage: { matched: ordered.length, ...(window ? { window: window.label } : {}) },
+    ...(reduce ? { fetchBodies: true } : {}),
   }
 }

@@ -117,6 +117,7 @@
   "chat.reasoning.reason": "推理：",
   "chat.reasoning.thinking": "思考中：",
   "chat.reasoning.title": "推理",
+  "chat.reduce_fetching": "正在抓取正文（{{done}}/{{total}}）…",
   "chat.reduce_progress": "正在逐条摘要（{{done}}/{{total}}）…",
   "chat.smart_sidebar.description": "深入了解这篇文章",
   "chat.smart_sidebar.open": "打开 AI 对话",
