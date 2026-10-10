@@ -104,7 +104,7 @@ export class LocalAIService extends IpcService {
       }
     }
 
-    const response = createChatStreamResponse({
+    const response = await createChatStreamResponse({
       body,
       config: input.config,
       apiKey: readApiKey(),

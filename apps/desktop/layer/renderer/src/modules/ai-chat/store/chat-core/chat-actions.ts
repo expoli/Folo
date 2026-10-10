@@ -344,7 +344,13 @@ export class ChatSliceActions {
       ? await loadFeedCandidates(this.get().chatId)
       : undefined
 
-    return buildLocalAIContext(message.parts, { question, feedCandidates })
+    return buildLocalAIContext(message.parts, {
+      question,
+      feedCandidates,
+      // A timeline summary asks about a whole selection, so the articles the prompt cannot carry
+      // travel as text for the main process to summarize; a normal chat stays as light as before.
+      reduce: this.get().scene === "timeline-summary",
+    })
   }
 
   /** The user message a regenerate request belongs to, so the local context matches it. */

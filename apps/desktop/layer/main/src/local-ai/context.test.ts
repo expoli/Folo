@@ -1,10 +1,12 @@
 import { describe, expect, test } from "vitest"
 
 import {
+  applyEntryNotes,
   buildChatSystemPrompt,
   describeChatContext,
   formatLocalContext,
   messageText,
+  pendingEntryTexts,
   toModelMessages,
 } from "./context"
 import { DEFAULT_CHAT_SYSTEM_PROMPT, languageName, NO_CONTEXT_NOTE } from "./prompts"
@@ -140,6 +142,87 @@ describe("formatLocalContext", () => {
     expect(formatLocalContext(undefined)).toBe("")
     expect(formatLocalContext({ blocks: [{ type: "mainEntry", value: "entry-1" }] })).toBe("")
     expect(formatLocalContext({ entries: [], feeds: [] })).toBe("")
+  })
+})
+
+describe("pendingEntryTexts", () => {
+  test("picks the entries whose text the prompt could not carry", () => {
+    const pending = pendingEntryTexts({
+      entries: [
+        { title: "With text", content: "Body" },
+        { title: "Waiting", body: "Full text" },
+        { title: "Nothing at all" },
+        { title: "Body but no text either", body: "" },
+      ],
+    })
+
+    // The position is the one the prompt uses, so a note can be attributed back to it.
+    expect(pending).toEqual([{ index: 2, title: "Waiting", url: undefined, body: "Full text" }])
+  })
+
+  test("finds nothing in a request without context", () => {
+    expect(pendingEntryTexts(undefined)).toEqual([])
+    expect(pendingEntryTexts({ entries: [{ content: "Body" }] })).toEqual([])
+  })
+})
+
+describe("applyEntryNotes", () => {
+  test("attaches the notes of the pre-pass and leaves the attached texts alone", () => {
+    const context = applyEntryNotes(
+      {
+        entries: [
+          { title: "With text", content: "Body", body: "Full text" },
+          { title: "Summarised", body: "Full text" },
+        ],
+      },
+      new Map([[2, "A note"]]),
+    )
+
+    expect(context?.entries).toEqual([
+      { title: "With text", content: "Body", body: "Full text" },
+      { title: "Summarised", body: "Full text", note: "A note" },
+    ])
+  })
+
+  test("returns the context unchanged when nothing was summarized", () => {
+    const context = { entries: [{ title: "One" }] }
+
+    expect(applyEntryNotes(context, new Map())).toBe(context)
+    expect(applyEntryNotes(undefined, new Map([[1, "note"]]))).toBeNull()
+  })
+})
+
+describe("formatLocalContext with summarized articles", () => {
+  test("renders the note as a summary and says what was not read", () => {
+    const context = formatLocalContext({
+      coverage: { matched: 3 },
+      entries: [
+        { title: "With text", content: "Body" },
+        { title: "Summarised", note: "The gist of it" },
+        { title: "Only a title" },
+      ],
+    })
+
+    expect(context).toContain("### [2] Summarised")
+    expect(context).toContain("(summarised from its full text)\nThe gist of it")
+    expect(context).toContain("### [3] Only a title")
+    expect(context).toContain(
+      "Coverage: 3 matched, 1 with text, 1 summarised from their text, 1 title-only.",
+    )
+    // A summarized article was read; only the title-only one carries the warning.
+    expect(context).toContain("never summarise them as if their content were known")
+  })
+
+  test("states what was summarized even when nothing was left out", () => {
+    const context = formatLocalContext({
+      coverage: { matched: 1 },
+      entries: [{ title: "Summarised", note: "The gist of it" }],
+    })
+
+    // The counts stay, so the model can tell a note apart from an article it read in full.
+    expect(context).toContain("Coverage: 1 matched, 0 with text, 1 summarised from their text.")
+    expect(context).not.toContain("title-only")
+    expect(context).toContain("The gist of it")
   })
 })
 

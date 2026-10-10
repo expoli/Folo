@@ -1,4 +1,9 @@
-import { configureLocalAI, resetLocalAI } from "@follow/store/ai-local/config"
+import { FeedViewType } from "@follow/constants"
+import {
+  configureLocalAI,
+  resetLocalAI,
+  setLocalAIContextBudget,
+} from "@follow/store/ai-local/config"
 import { useEntryStore } from "@follow/store/entry/store"
 import type { EntryModel } from "@follow/store/entry/types"
 import { createDesktopAPIHeaders } from "@follow/utils/headers"
@@ -186,6 +191,47 @@ describe("ChatSliceActions.regenerate", () => {
         headers: expect.objectContaining({ "X-App-Name": "Folo Web" }),
       }),
     )
+  })
+
+  test("asks for the articles only a timeline summary cannot carry", async () => {
+    configureLocalAI({ baseUrl: "http://127.0.0.1:8788" })
+    setLocalAIContextBudget({ maxEntries: 1, maxTotalChars: 40 })
+    useEntryStore.setState({
+      entryIdByView: {
+        [FeedViewType.All]: new Set(["entry-1", "entry-2"]),
+      } as Record<FeedViewType, Set<string>>,
+    })
+    const store = createAIChatStore()
+    store.setState({ chatId: "chat-1", isLocal: true, scene: "general" })
+    const sendMock = vi
+      .spyOn(store.getState().chatInstance, "sendMessage")
+      .mockResolvedValue(undefined)
+
+    // A timeline block scopes the request, so the second article falls outside the prompt budget.
+    const message: BizUIMessage = {
+      ...createMessage("user-1", "user"),
+      parts: [
+        {
+          type: "data-block",
+          data: [{ id: "block-view", type: "mainView", value: "-1" }],
+        },
+        { type: "text", text: "Summarize today" },
+      ] as BizUIMessage["parts"],
+    }
+
+    await store.getState().chatActions.sendMessage(message)
+    const plainBody = sendMock.mock.calls.at(-1)?.[1]?.body as {
+      localAIContext?: { entries: { body?: unknown }[] }
+    }
+    expect(plainBody.localAIContext?.entries[1]).not.toHaveProperty("body")
+
+    store.setState({ scene: "timeline-summary" })
+    await store.getState().chatActions.sendMessage(message)
+    const summaryBody = sendMock.mock.calls.at(-1)?.[1]?.body as {
+      localAIContext?: { entries: { body?: unknown }[] }
+    }
+    // The summary asks for the text of the article the prompt could not carry.
+    expect(summaryBody.localAIContext?.entries[1]?.body).toBe("Body entry-2")
   })
 })
 

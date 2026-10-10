@@ -27,6 +27,12 @@ export const DEFAULT_TITLE_SYSTEM_PROMPT = [
   "conversation is written in: no quotes, no trailing punctuation, no explanations.",
 ].join(" ")
 
+export const DEFAULT_REDUCE_SYSTEM_PROMPT = [
+  "You condense articles for another assistant that has to answer about a whole reading list.",
+  "Write one compact, factual note per article, keep names and numbers exact, and never add",
+  "commentary about the task itself.",
+].join(" ")
+
 // The app has no access to Folo's backend from the main process, so a request without attached
 // context really has no entries. Say that instead of inventing a timeline or feed list.
 export const NO_CONTEXT_NOTE = [

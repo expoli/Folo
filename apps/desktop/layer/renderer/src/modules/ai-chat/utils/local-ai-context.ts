@@ -25,6 +25,12 @@ export interface LocalAIContextEntry {
   feedId?: string | null
   publishedAt?: string | null
   content?: string | null
+  /**
+   * Text of an article the prompt is too small to carry verbatim: the main process summarizes it
+   * into a note first, so a summary of a whole day covers every matched article instead of the
+   * newest handful. Only sent when the caller asks for it (a summary shortcut, not a chat).
+   */
+  body?: string | null
 }
 
 /** A feed the local model may recommend; a gateway cannot read Folo's catalogue itself. */
@@ -61,6 +67,11 @@ export interface BuildLocalAIContextOptions {
   feedCandidates?: LocalAIFeedCandidate[]
   /** Injectable clock so tests can pin relative windows. */
   now?: Dayjs
+  /**
+   * Attach the text of the articles that do not fit the prompt, so the main process can summarize
+   * them into notes (the timeline-summary shortcut asks for this; a chat does not).
+   */
+  reduce?: boolean
 }
 
 export interface LocalAITimelineWindow {
@@ -220,9 +231,23 @@ export const parseMentionDateWindow = (
  */
 const LISTED_ENTRY_LIMIT = 200
 
+/** Longest text sent for one article of a wide selection; a note rarely needs more of it. */
+const REDUCE_ENTRY_CHARS = 6000
+/** Text the reduce pre-pass may read for one request, so one summary stays bounded. */
+const REDUCE_TOTAL_CHARS = 200_000
+
 /** Roughly what one title-only row costs the prompt: its title, its link and the date around them. */
 const metadataChars = (entry: EntryModel) =>
   (entry.title?.length ?? 0) + (entry.url?.length ?? 0) + 40
+
+/** The text of an article that travels for summarizing instead of for the prompt itself. */
+const reduceBody = (entry: EntryModel, allowance: number) => {
+  const text = entryText(entry).trim()
+  const limit = Math.min(REDUCE_ENTRY_CHARS, allowance)
+  if (!text || limit <= 0) return null
+
+  return text.length <= limit ? text : text.slice(0, limit)
+}
 
 const takeEntries = (
   ordered: EntryModel[],
@@ -234,6 +259,8 @@ const takeEntries = (
     listedLimit?: number
     /** Text allowance for the metadata rows of the entries that carry no body. */
     listedChars?: number
+    /** Send the text of the entries that do not fit, for the main process to summarize. */
+    reduce?: boolean
   },
 ): { entries: LocalAIContextEntry[]; withBody: number } => {
   const entries: LocalAIContextEntry[] = []
@@ -242,6 +269,7 @@ const takeEntries = (
   // The listing has an allowance of its own: bodies using up the text budget must not also erase
   // the coverage of the entries they left out.
   let remainingListing = options.listedChars ?? options.budget.maxTotalChars
+  let remainingReduce = REDUCE_TOTAL_CHARS
   let withBody = 0
 
   for (const entry of ordered) {
@@ -259,6 +287,9 @@ const takeEntries = (
       remainingListing -= metadataChars(entry)
     }
 
+    const body = content || !options.reduce ? null : reduceBody(entry, remainingReduce)
+    if (body) remainingReduce -= body.length
+
     entries.push({
       id: entry.id,
       title: entry.title,
@@ -266,6 +297,7 @@ const takeEntries = (
       feedId: entry.feedId,
       publishedAt: entry.publishedAt.toISOString(),
       content,
+      ...(options.reduce ? { body } : {}),
     })
   }
 
@@ -284,6 +316,7 @@ const isInWindow = (entry: EntryModel, window: LocalAITimelineWindow) => {
  */
 const buildTimelineContext = (
   window: LocalAITimelineWindow,
+  reduce: boolean,
 ): { label: string; entries: LocalAIContextEntry[]; matched: number } => {
   const budget = getLocalAIContextBudget()
   const viewIds = useEntryStore.getState().entryIdByView[FeedViewType.All] ?? new Set<string>()
@@ -308,6 +341,7 @@ const buildTimelineContext = (
       Math.max(1, Math.floor(budget.maxTotalChars / considered)),
     ),
     budget,
+    reduce,
   })
 
   return { label: window.label, entries, matched: inWindow.length }
@@ -419,11 +453,13 @@ export const buildLocalAIContext = (
   const now = options.now ?? dayjs()
   // A prompt that names a period ("today") narrows the selection; it never widens it.
   const window = parseMentionDateWindow(question, now)
+  // A summary of a wide selection asks for the texts of everything it matched; a chat does not.
+  const reduce = options.reduce === true
 
   if (blocks.length === 0) {
     // Folo's built-in shortcuts ship no context blocks (upstream the server resolves them), so the
     // client gathers what a local gateway cannot reach itself.
-    const timeline = window ? buildTimelineContext(window) : null
+    const timeline = window ? buildTimelineContext(window, reduce) : null
     if (!timeline && !feeds) return null
 
     return {
@@ -503,6 +539,7 @@ export const buildLocalAIContext = (
     maxEntries: singleEntry ? 1 : budget.maxEntries,
     perEntryLimit: singleEntry ? budget.maxTotalChars : budget.maxCharsPerEntry,
     budget,
+    reduce,
   })
 
   if (entries.length === 0) return null

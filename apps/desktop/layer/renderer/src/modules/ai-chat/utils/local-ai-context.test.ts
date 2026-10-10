@@ -208,6 +208,33 @@ describe("buildLocalAIContext", () => {
     expect(context!.entries.at(-1)?.content).toBeNull()
   })
 
+  test("sends the text of the articles the prompt cannot carry when asked to summarize", () => {
+    setLocalAIContextBudget({ maxEntries: 1, maxTotalChars: 100 })
+    setEntries([
+      createEntry("main", { content: "x".repeat(200) }),
+      createEntry("tail", { content: "y".repeat(500) }),
+    ])
+
+    const context = buildLocalAIContext([blockPart([allEntriesBlock()])], { reduce: true })
+
+    expect(context?.entries[1]?.content).toBeNull()
+    // The tail article travels as text instead of as a title, so the pre-pass can summarize it.
+    expect(context?.entries[1]?.body).toBe("y".repeat(500))
+  })
+
+  test("keeps the payload light for a chat that did not ask for summaries", () => {
+    setLocalAIContextBudget({ maxEntries: 1, maxTotalChars: 100 })
+    setEntries([
+      createEntry("main", { content: "x".repeat(200) }),
+      createEntry("tail", { content: "y".repeat(500) }),
+    ])
+
+    const context = buildLocalAIContext([blockPart([allEntriesBlock()])])
+
+    expect(context?.entries[1]?.content).toBeNull()
+    expect(context?.entries[1]).not.toHaveProperty("body")
+  })
+
   test("only sends unread entries for an unreadOnly block", () => {
     setEntries([
       createEntry("entry-read", { read: true }),

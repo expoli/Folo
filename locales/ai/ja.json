@@ -333,7 +333,7 @@
   "settings.localGateway.direct.advanced.temperature.label": "温度",
   "settings.localGateway.direct.advanced.title": "詳細設定",
   "settings.localGateway.direct.advanced.translationChunkChars.label": "翻訳の分割文字数",
-  "settings.localGateway.direct.advanced.translationConcurrency.label": "翻訳の同時実行数",
+  "settings.localGateway.direct.advanced.translationConcurrency.label": "翻訳と要約（バッチ）の同時実行数",
   "settings.localGateway.direct.apiKey.clear": "削除",
   "settings.localGateway.direct.apiKey.description": "システムのキーリングで暗号化し、このアプリだけが使います。アカウントには同期されず、再表示もされません。",
   "settings.localGateway.direct.apiKey.label": "API キー",

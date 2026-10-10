@@ -333,7 +333,7 @@
   "settings.localGateway.direct.advanced.temperature.label": "Temperature",
   "settings.localGateway.direct.advanced.title": "Advanced",
   "settings.localGateway.direct.advanced.translationChunkChars.label": "Translation chunk size (characters)",
-  "settings.localGateway.direct.advanced.translationConcurrency.label": "Concurrent translations",
+  "settings.localGateway.direct.advanced.translationConcurrency.label": "Concurrent translation and summary calls",
   "settings.localGateway.direct.apiKey.clear": "Clear",
   "settings.localGateway.direct.apiKey.description": "Encrypted with your system keyring and used by the app only. It is never synced to your account and never shown again.",
   "settings.localGateway.direct.apiKey.label": "API Key",

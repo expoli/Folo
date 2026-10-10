@@ -70,6 +70,9 @@ interface ContextEntry {
   url?: unknown
   publishedAt?: unknown
   content?: unknown
+  /** Text the prompt is too small to carry verbatim; the pre-pass summarizes it into `note`. */
+  body?: unknown
+  note?: unknown
 }
 
 interface ContextFeed {
@@ -99,6 +102,44 @@ interface ContextCoverage {
 
 const asText = (value: unknown) => (typeof value === "string" && value ? value : "")
 
+/** Entry texts the prompt cannot carry in full, in prompt order, for the reduce pre-pass. */
+export interface PendingEntryText {
+  /** 1-based position among the entries, so a note can be attributed to its article. */
+  index: number
+  title?: string
+  url?: string
+  body: string
+}
+
+export const pendingEntryTexts = (context: LocalAIContext | null | undefined): PendingEntryText[] =>
+  (Array.isArray(context?.entries) ? context.entries : [])
+    .map((entry, position) => ({ entry, index: position + 1 }))
+    .filter(({ entry }) => !asText(entry.content) && asText(entry.body))
+    .map(({ entry, index }) => ({
+      index,
+      title: asText(entry.title) || undefined,
+      url: asText(entry.url) || undefined,
+      body: asText(entry.body),
+    }))
+
+/** Adds the notes of the pre-pass, leaving the entries that arrived with their text untouched. */
+export const applyEntryNotes = (
+  context: LocalAIContext | null | undefined,
+  notes: Map<number, string>,
+): LocalAIContext | null => {
+  if (!context || notes.size === 0) return context ?? null
+
+  if (!Array.isArray(context.entries)) return context
+
+  return {
+    ...context,
+    entries: context.entries.map((entry, position) => {
+      const note = notes.get(position + 1)
+      return note && !asText(entry.content) ? { ...entry, note } : entry
+    }),
+  }
+}
+
 /**
  * What the selection matched versus what the text budget could carry. A summary of "today" must not
  * read as if it covered the day when only the newest articles travelled with the request, and an
@@ -112,16 +153,18 @@ const formatCoverage = (context: LocalAIContext, entries: ContextEntry[]): strin
   if (matched === 0 && !window) return ""
 
   const withText = entries.filter((entry) => asText(entry.content)).length
-  const listedOnly = entries.length - withText
+  const fromNotes = entries.filter((entry) => !asText(entry.content) && asText(entry.note)).length
+  const listedOnly = entries.length - withText - fromNotes
   const leftOut = Math.max(0, matched - entries.length)
 
   // A plain chat whose articles all carry text has nothing to report: stay out of its prompt.
-  if (!window && listedOnly === 0 && leftOut === 0) return ""
+  if (!window && listedOnly === 0 && leftOut === 0 && fromNotes === 0) return ""
 
   const counts = [
     window ? `window "${window}"` : "",
     `${matched} matched`,
     `${withText} with text`,
+    fromNotes > 0 ? `${fromNotes} summarised from their text` : "",
     listedOnly > 0 ? `${listedOnly} title-only` : "",
     leftOut > 0 ? `${leftOut} not listed` : "",
   ].filter(Boolean)
@@ -161,7 +204,13 @@ export const formatLocalContext = (context: LocalAIContext | null | undefined): 
       ]
         .filter(Boolean)
         .join(" — ")
-      return `### [${index + 1}] ${header}\n${asText(entry.content) || "(no text attached)"}`
+      const body =
+        asText(entry.content) ||
+        (asText(entry.note)
+          ? `(summarised from its full text)\n${asText(entry.note)}`
+          : "(no text attached)")
+
+      return `### [${index + 1}] ${header}\n${body}`
     })
     .join("\n\n")
 

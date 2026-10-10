@@ -191,7 +191,9 @@ export const routeLocalAIRequest = async (input: LocalAIRouteInput): Promise<Res
 
   try {
     if (method === "POST" && pathname === "/ai/chat") {
-      return createChatStreamResponse({ body: parseJsonBody(input.body), config, apiKey })
+      // Awaited: the chat handler is async now (it summarizes the articles the prompt cannot carry
+      // first), and a bare `return` would let its rejections escape the catch below.
+      return await createChatStreamResponse({ body: parseJsonBody(input.body), config, apiKey })
     }
 
     if (method === "POST" && pathname === "/ai/summary") {

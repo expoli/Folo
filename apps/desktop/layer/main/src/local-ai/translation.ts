@@ -3,6 +3,7 @@ import { generateText } from "ai"
 
 import { splitIntoChunks } from "./chunking"
 import { jsonResponse } from "./http"
+import { parseJsonLoose } from "./loose-json"
 import { DEFAULT_TRANSLATION_SYSTEM_PROMPT, languageName } from "./prompts"
 import type { DirectCallOptions } from "./provider"
 import { MAX_OUTPUT_TOKENS } from "./provider"
@@ -14,38 +15,6 @@ export const TRANSLATION_CHUNK_CHARS = 8000
 export const TRANSLATION_CONCURRENCY = 3
 
 export type TranslatedEntryData = Record<string, string>
-
-/** Strips a ```json … ``` fence without a backtracking-prone regex. */
-const stripCodeFence = (text: string) => {
-  const trimmed = text.trim()
-  if (!trimmed.startsWith("```")) return trimmed
-
-  const firstNewline = trimmed.indexOf("\n")
-  const body = firstNewline === -1 ? trimmed.slice(3) : trimmed.slice(firstNewline + 1)
-  const closing = body.lastIndexOf("```")
-
-  return (closing === -1 ? body : body.slice(0, closing)).trim()
-}
-
-const parseJsonLoose = (text?: string | null): unknown => {
-  if (!text) return null
-
-  const candidate = stripCodeFence(text)
-
-  try {
-    return JSON.parse(candidate)
-  } catch {
-    const start = candidate.indexOf("{")
-    const end = candidate.lastIndexOf("}")
-    if (start === -1 || end <= start) return null
-
-    try {
-      return JSON.parse(candidate.slice(start, end + 1))
-    } catch {
-      return null
-    }
-  }
-}
 
 /** One JSON request covering the short fields of an entry, as before chunking existed. */
 export const translateShortFields = async (

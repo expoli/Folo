@@ -112,6 +112,14 @@ gateway renders as a `Coverage: …` note before the entries: a summary of "toda
 it saw 20 of 137 articles, and entries marked `(no text attached)` must not be summarised as if
 their content had been read.
 
+**Built-in direct mode closes that gap** with a `reduce` pre-pass: a timeline summary sends the
+text of the articles the prompt cannot carry as `body`, the main process summarizes them in batches
+(`apps/desktop/layer/main/src/local-ai/reduce.ts`, 8 articles or 16 000 characters per call, 3 at a
+time, notes reused per article/model/language) and attaches the notes to the prompt. The coverage
+note then reads `… 20 with text, 78 summarised from their text …`, and those articles count as read
+instead of listed by title. The gateway has no such pre-pass yet — it renders what it receives, so
+its wide selections stay title-only until the same step is ported here.
+
 ## 3. Verify
 
 ```bash
@@ -174,6 +182,7 @@ purpose, so the two paths can be compared line by line.
 | Configuration                                                                     | `.env` + `GATEWAY_TOKEN`                                       | `Settings → AI` (address and model list stay on the device, the API key is encrypted with the OS keyring) |
 | Endpoint                                                                          | `AI_BASE_URL`                                                  | one OpenAI-compatible endpoint per install                                                                |
 | Extra tuning (`AI_SUMMARY_CHUNK_CHARS`, `AI_HEADERS`, translation concurrency, …) | yes                                                            | no: the defaults are compiled in                                                                          |
+| Wide selections (a summary of a whole day)                                        | articles beyond the budget stay listed by title                | summarized into notes first (`reduce` pre-pass), so every matched article is read                         |
 | Translation delivery                                                              | NDJSON streamed line by line, so entries appear as they finish | buffered: IPC answers a batch in one piece, so the translations appear together                           |
 | System proxy                                                                      | follows `HTTP(S)_PROXY` of its shell                           | follows the same proxy as the rest of the app (Chromium's `net.fetch`)                                    |
 
@@ -197,6 +206,11 @@ change there has to be mirrored in the direct mode (and vice versa) to keep them
 - **Chat history stays local**: sessions started against the gateway are never marked as synced and
   are not sent to Folo (`markSessionSynced`, the session sync, the unread query and session deletion
   all skip the backend). Task sessions / `Settings → AI` task lists still come from Folo.
+- **A wide summary in direct mode runs a pre-pass**: the first "summarize today" over ~100 matched
+  articles answers a few articles per call before the answer starts, so the first tokens take
+  noticeably longer (the log prints `[local-ai] reduce: …` when it finishes, and the notes are
+  cached for the rest of the session, so repeating the same summary is immediate). Closing the chat
+  window stops the work; the Stop button takes effect once the answer stream has opened.
 - Both the plan gate for BYOK and AI quota live on Folo's servers; the local path bypasses them for
   the three endpoints above. Review your own situation before using this with a Folo account you
   care about — see the project README and Folo's Terms of Service.

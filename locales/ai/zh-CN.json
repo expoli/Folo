@@ -333,7 +333,7 @@
   "settings.localGateway.direct.advanced.temperature.label": "温度",
   "settings.localGateway.direct.advanced.title": "高级设置",
   "settings.localGateway.direct.advanced.translationChunkChars.label": "翻译分块字符数",
-  "settings.localGateway.direct.advanced.translationConcurrency.label": "翻译并发数",
+  "settings.localGateway.direct.advanced.translationConcurrency.label": "翻译与摘要（批量归并）并发数",
   "settings.localGateway.direct.apiKey.clear": "清除",
   "settings.localGateway.direct.apiKey.description": "用系统钥匙串加密保存，仅供本机 App 使用；不会同步到账号，也不会再显示明文。",
   "settings.localGateway.direct.apiKey.label": "API Key",

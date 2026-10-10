@@ -364,6 +364,129 @@ describe("routeLocalAIRequest", () => {
     expect(system?.content).toContain("Entry body")
   })
 
+  test("summarizes the articles the prompt could not carry", async () => {
+    const calls = stubUpstream((call) =>
+      call.body?.stream
+        ? sseStream("Summary of the day")
+        : completion('{"2": "A note about the second", "3": "A note about the third"}'),
+    )
+
+    const response = await route({
+      path: "/ai/chat",
+      body: JSON.stringify({
+        messages: [{ role: "user", parts: [{ type: "text", text: "Summarize today" }] }],
+        localAIContext: {
+          coverage: { matched: 3, window: "last 24 hours" },
+          entries: [
+            { title: "First", content: "First body" },
+            { title: "Second", body: "Second full text" },
+            { title: "Third", body: "Third full text" },
+          ],
+        },
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toContain("Summary of the day")
+
+    // One call summarizes the two articles without text, then the answer streams.
+    const reduceCalls = calls.filter((call) => !call.body?.stream)
+    expect(reduceCalls).toHaveLength(1)
+    expect(JSON.stringify(reduceCalls[0]!.body)).toContain("Second full text")
+
+    const system = (calls.at(-1)!.body?.messages as { role: string; content: string }[]).find(
+      (message) => message.role === "system",
+    )
+    expect(system?.content).toContain("A note about the second")
+    expect(system?.content).toContain("A note about the third")
+    expect(system?.content).toContain("2 summarised from their text")
+    expect(system?.content).toContain('window "last 24 hours"')
+  })
+
+  test("attributes every note of a multi-batch summary to its own article", async () => {
+    // Nine articles do not fit one call (8 per batch), so the attribution seam is exercised.
+    const calls = stubUpstream((call) => {
+      if (call.body?.stream) return sseStream("Summary")
+
+      const messages = (call.body?.messages ?? []) as { content?: string }[]
+      const prompt = messages.map((message) => String(message.content ?? "")).join("\n")
+      const indexes = [...prompt.matchAll(/### \[(\d+)\]/g)].map((match) => match[1])
+      return completion(JSON.stringify(Object.fromEntries(indexes.map((i) => [i, `note ${i}`]))))
+    })
+
+    const response = await route({
+      path: "/ai/chat",
+      body: JSON.stringify({
+        messages: [{ role: "user", parts: [{ type: "text", text: "Summarize today" }] }],
+        localAIContext: {
+          coverage: { matched: 9 },
+          entries: Array.from({ length: 9 }, (_, position) => ({
+            title: `Article ${position + 1}`,
+            body: `Text of article ${position + 1}`,
+          })),
+        },
+      }),
+    })
+
+    expect(await response.text()).toContain("Summary")
+
+    const reduceCalls = calls.filter((call) => !call.body?.stream)
+    expect(reduceCalls).toHaveLength(2)
+
+    const system = (calls.at(-1)!.body?.messages as { role: string; content: string }[]).find(
+      (message) => message.role === "system",
+    )
+    for (let index = 1; index <= 9; index += 1) {
+      expect(system?.content).toContain(`### [${index}] Article ${index}`)
+      expect(system?.content).toContain(`(summarised from its full text)\nnote ${index}`)
+    }
+
+    expect(system?.content).toContain("9 summarised from their text")
+  })
+
+  test("reuses the notes of an earlier summary", async () => {
+    const calls = stubUpstream((call) =>
+      call.body?.stream ? sseStream("Again") : completion('{"1": "A cached note"}'),
+    )
+    const body = JSON.stringify({
+      messages: [{ role: "user", parts: [{ type: "text", text: "Summarize today" }] }],
+      localAIContext: {
+        coverage: { matched: 1 },
+        entries: [{ title: "Cached article", body: "Cached full text" }],
+      },
+    })
+
+    await (await route({ path: "/ai/chat", body })).text()
+    await (await route({ path: "/ai/chat", body })).text()
+
+    expect(calls.filter((call) => !call.body?.stream)).toHaveLength(1)
+  })
+
+  test("keeps an article it could not summarize as a title", async () => {
+    const calls = stubUpstream((call) =>
+      call.body?.stream ? sseStream("Partial answer") : completion("I cannot help with that."),
+    )
+
+    const response = await route({
+      path: "/ai/chat",
+      body: JSON.stringify({
+        messages: [{ role: "user", parts: [{ type: "text", text: "Summarize today" }] }],
+        localAIContext: {
+          coverage: { matched: 1 },
+          entries: [{ title: "Unreadable", body: "Text the model would not summarize" }],
+        },
+      }),
+    })
+
+    // The answer still arrives, and the prompt says which article was not read.
+    expect(await response.text()).toContain("Partial answer")
+    const system = (calls.at(-1)!.body?.messages as { role: string; content: string }[]).find(
+      (message) => message.role === "system",
+    )
+    expect(system?.content).toContain("(no text attached)")
+    expect(system?.content).toContain("1 title-only")
+  })
+
   test("applies the tuning of the direct endpoint", async () => {
     const calls = stubUpstream(() => sseStream("ok"))
 
