@@ -28,9 +28,11 @@ export const directCallOptions = (config: LocalAIDirectConfig): DirectCallOption
   maxOutputTokens: positive(config.maxOutputTokens) ?? MAX_OUTPUT_TOKENS,
   temperature: finite(config.temperature),
   // `reasoningEffort` is a standard option of the OpenAI-compatible provider, so the thinking
-  // budget travels with the call instead of being injected into the body by hand.
+  // budget travels with the call instead of being injected into the body by hand. The key is the
+  // provider's settings name in camel case, which is what the SDK looks for (`local-ai` is
+  // deprecated).
   providerOptions: config.reasoningEffort
-    ? { "local-ai": { reasoningEffort: config.reasoningEffort } }
+    ? { localAi: { reasoningEffort: config.reasoningEffort } }
     : undefined,
   summaryChunkChars: positive(config.summaryChunkChars),
   translationChunkChars: positive(config.translationChunkChars),

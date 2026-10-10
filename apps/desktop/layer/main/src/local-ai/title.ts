@@ -10,10 +10,30 @@ import type { DirectCallOptions } from "./provider"
  * main process asks the same model instead, so the "generate title" action needs no Folo API.
  */
 /**
- * Budget of a title call. Reasoning models count their thinking against it, and a cap they use up
- * leaves no title at all, so this is generous for a six-word answer.
+ * Budget of a title call. A reasoning model spends hundreds of tokens thinking before it writes six
+ * words, and a cap its thinking uses up leaves no title at all (`finish=length`, everything counted
+ * as reasoning), so this is generous on purpose.
  */
-export const TITLE_MAX_OUTPUT_TOKENS = 512
+export const TITLE_MAX_OUTPUT_TOKENS = 4096
+
+/**
+ * First words of the conversation, used when the model returns no text at all: a button that does
+ * nothing is worse than a title taken from the answer it just wrote.
+ */
+export const fallbackTitle = (messages: unknown[]): string => {
+  const texts = messages
+    .map((message) => {
+      const content = (message as { content?: unknown })?.content
+      return typeof content === "string" ? content.trim() : ""
+    })
+    .filter(Boolean)
+
+  // Shortcut templates are long English prompts, so a short message makes the better title.
+  const answer = texts.at(-1) ?? ""
+  const source = texts.find((text) => text.length <= 80) ?? answer
+
+  return (source.split("\n")[0] ?? "").slice(0, 60).trim()
+}
 
 /** Model replies quote and punctuate titles; the UI shows whatever comes back verbatim. */
 export const cleanTitle = (text: unknown) => {
@@ -68,14 +88,15 @@ export const handleSummaryTitleRequest = async (params: {
     providerOptions: params.call?.providerOptions,
   })
 
-  const title = cleanTitle(text)
+  const generated = cleanTitle(text)
+  const title = generated || fallbackTitle(messages)
   // The UI reports a failure when no title comes back, so the log says which case it was: a model
   // that spent its budget thinking, a provider that answers in `reasoning` only, or nothing at all.
   console.log(
     `[local-ai] title: ${title ? JSON.stringify(title) : "(empty reply)"}${
-      title
+      generated
         ? ""
-        : ` finish=${finishReason ?? "?"} output=${usage?.outputTokens ?? "?"} reasoning=${
+        : ` (fallback) finish=${finishReason ?? "?"} output=${usage?.outputTokens ?? "?"} reasoning=${
             usage?.outputTokenDetails?.reasoningTokens ?? "?"
           } reasoningText=${reasoning?.length ?? 0}`
     }`,

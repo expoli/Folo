@@ -299,6 +299,18 @@ describe("routeLocalAIRequest", () => {
     expect(response.status).toBe(400)
   })
 
+  test("falls back to the conversation when the model returns no text", async () => {
+    // A reasoning model can spend an entire budget thinking; the action should still do something.
+    stubUpstream(() => completion(""))
+
+    const response = await route({
+      path: "/ai/summary-title",
+      body: JSON.stringify({ messages: [{ role: "assistant", content: "A short answer" }] }),
+    })
+
+    await expect(response.json()).resolves.toEqual({ title: "A short answer" })
+  })
+
   test("serves a translation batch end to end", async () => {
     stubUpstream(() => completion(JSON.stringify({ title: "Titel" })))
 
