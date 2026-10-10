@@ -29,7 +29,7 @@ import {
   directCallOptions,
   resolveModelId,
 } from "./provider"
-import { summarizeEntries } from "./reduce"
+import { noteCacheKey, summarizeEntries } from "./reduce"
 
 /** Longest note attached per article, and for all notes together: the prompt still has a size. */
 const NOTES_ENTRY_CHARS = 600
@@ -113,6 +113,10 @@ export const createChatStreamResponse = async (params: {
     onError: streamError,
     execute: async ({ writer }) => {
       let context = body.localAIContext ?? null
+      // The model that actually runs, not the one the client asked for: a requested model outside
+      // the configured list silently falls back, and its notes must not be reused as the other's.
+      const modelId = resolveModelId(config, requestedModel) || requestedModel || config.model
+      const notes = getNotesCache()
 
       // A summary is only as good as what it reads. The client marks the requests whose articles
       // are worth fetching (the ones it also sends for the reduce pre-pass); the pass is bounded,
@@ -120,7 +124,17 @@ export const createChatStreamResponse = async (params: {
       if (context?.fetchBodies === true && Array.isArray(context.entries)) {
         // Bound once: the narrowing of `context` does not survive into the callbacks below.
         const contextEntries = context.entries
-        const targets = collectFetchTargets(contextEntries)
+        // An article that already has a note is left alone: reading it again would change the text
+        // the note is keyed by, so the note would be paid for twice and never reused.
+        const targets = collectFetchTargets(contextEntries).filter((target) => {
+          const entry = contextEntries[target.index - 1]
+          const body = typeof entry?.body === "string" ? entry.body : ""
+          const hasContent = typeof entry?.content === "string" && !!entry.content
+          if (hasContent || !body) return true
+
+          const title = typeof entry?.title === "string" ? entry.title : null
+          return !notes.get(noteCacheKey({ modelId, language, title, body }))
+        })
         if (targets.length > 0) {
           console.log(
             `[local-ai] fetch: reading ${targets.length} article(s) that only carry an excerpt…`,
@@ -194,11 +208,11 @@ export const createChatStreamResponse = async (params: {
           entries: pending,
           language,
           call,
-          cache: getNotesCache(),
+          cache: notes,
           // The model that actually runs, not the one the client asked for: a requested model
           // outside the configured list silently falls back, and its notes must not be reused as
           // the other's.
-          modelId: resolveModelId(config, requestedModel) || requestedModel || config.model,
+          modelId,
           log: console.log,
           signal: abortSignal,
           onProgress: (done, total) => {

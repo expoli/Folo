@@ -29,6 +29,19 @@ export const REDUCE_CONCURRENCY = 3
  */
 export const REDUCE_PROMPT_VERSION = 1
 
+/**
+ * The key one note is stored under: the same article, model, language and prompt version reuse it,
+ * and anything else does not. Exported so a caller can ask whether an article was already
+ * summarized before deciding to read it again.
+ */
+export const noteCacheKey = (params: {
+  modelId: string
+  language?: string | null
+  title?: string | null
+  body: string
+}) =>
+  `v${REDUCE_PROMPT_VERSION}|${params.modelId}|${params.language ?? ""}|${params.title ?? ""}|${textHash(params.body)}`
+
 export interface ReduceEntry {
   /** 1-based position in the prompt, so a note can be attributed back to its article. */
   index: number
@@ -176,7 +189,7 @@ export const summarizeEntries = async (params: {
   const { model, entries, language, call, cache, modelId = "", log, signal, onProgress } = params
   const notes = new Map<number, string>()
   const keyOf = (entry: ReduceEntry) =>
-    `v${REDUCE_PROMPT_VERSION}|${modelId}|${language ?? ""}|${entry.title ?? ""}|${textHash(entry.body)}`
+    noteCacheKey({ modelId, language, title: entry.title, body: entry.body })
 
   const pending: ReduceEntry[] = []
   for (const entry of entries.slice(0, REDUCE_MAX_ENTRIES)) {
