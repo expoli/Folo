@@ -7,6 +7,15 @@ import { createServer } from "node:http"
 const PORT = Number(process.env.MOCK_PORT || 8799)
 
 const completionFor = (prompt) => {
+  if (prompt.includes("articles of one reading list")) {
+    // The reduce pre-pass asks for one note per article; answer in the requested shape so the
+    // check can assert the notes reached the final prompt.
+    const indexes = [...prompt.matchAll(/### \[(\d+)\]/g)].map((match) => match[1])
+    return JSON.stringify(
+      Object.fromEntries(indexes.map((index) => [index, `[mock note ${index}]`])),
+    )
+  }
+
   if (prompt.includes("Merge these")) return "Merged summary of every part."
 
   if (prompt.includes("Translate the text below")) return "[mock chunk translation]"

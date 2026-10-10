@@ -92,6 +92,67 @@ await check("GET /ai/chat/:id/stream answers 204 (no resumable stream)", async (
   return "204"
 })
 
+await check("POST /ai/chat summarizes the articles the prompt cannot carry", async () => {
+  const response = await fetch(`${gatewayUrl}/ai/chat`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      id: "chat-reduce",
+      trigger: "submit-message",
+      model: "mock-model",
+      scene: "general",
+      localAIContext: {
+        blocks: [{ type: "mainView", value: "-1" }],
+        coverage: { matched: 2, window: "last 24 hours" },
+        entries: [
+          {
+            id: "entry-1",
+            title: "With text",
+            url: "https://example.com/a",
+            publishedAt: "2026-10-10T08:00:00.000Z",
+            content: "Body of the first article.",
+          },
+          {
+            id: "entry-2",
+            title: "For the pre-pass",
+            url: "https://example.com/b",
+            publishedAt: "2026-10-10T07:00:00.000Z",
+            body: "Text of the second article, which the prompt cannot carry.",
+          },
+        ],
+      },
+      messages: [
+        {
+          id: "message-1",
+          role: "user",
+          parts: [{ type: "data-rich-text", data: { state: "{}", text: "Summarize today" } }],
+        },
+      ],
+    }),
+  })
+
+  assert(response.ok, `status ${response.status}`)
+  await response.text()
+
+  const captured = await fetch(`${mockUrl}/__last-request`)
+  assert(captured.ok, `mock upstream captured no request (${captured.status}; is it running?)`)
+  const upstream = await captured.json()
+  const prompt = (upstream?.messages ?? []).map((message) => message.content ?? "").join("\n")
+
+  assert(
+    prompt.includes("(summarised from its full text)"),
+    "the note of the pre-pass never reached the prompt",
+  )
+  assert(prompt.includes("[mock note 2]"), "the note is not the one the pre-pass asked for")
+  assert(
+    prompt.includes("1 summarised from their text"),
+    "the coverage line does not count the summarized article",
+  )
+  assert(prompt.includes("Body of the first article."), "the attached text is missing")
+
+  return "notes, coverage line and attached text all reached the model"
+})
+
 await check("POST /ai/chat renders the coverage of a partial selection", async () => {
   const response = await fetch(`${gatewayUrl}/ai/chat`, {
     method: "POST",

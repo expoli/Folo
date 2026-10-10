@@ -100,6 +100,13 @@ model:
 AI_CONTEXT_MAX_ENTRIES=20          # max articles attached to one chat request
 AI_CONTEXT_MAX_CHARS_PER_ENTRY=20000  # per article, when several are attached
 AI_CONTEXT_MAX_TOTAL_CHARS=60000   # whole request; a single referenced article may use all of it
+AI_REDUCE_BATCH_ENTRIES=8          # articles per summarizing call of the reduce pre-pass
+AI_REDUCE_BATCH_CHARS=16000        # text per call
+AI_REDUCE_CONCURRENCY=3            # summarizing calls at the same time (defaults to the translation one)
+AI_REDUCE_MAX_ENTRIES=200          # articles the pre-pass reads per request
+AI_REDUCE_NOTE_CHARS=600           # longest note attached per article
+AI_REDUCE_NOTES_TOTAL_CHARS=30000  # all notes of one request together
+AI_REDUCE_SYSTEM_PROMPT=...        # prompt of the pre-pass
 ```
 
 These values are served by `GET /ai/chat/config` (`localAIContext`). A client build that predates
@@ -112,13 +119,13 @@ gateway renders as a `Coverage: …` note before the entries: a summary of "toda
 it saw 20 of 137 articles, and entries marked `(no text attached)` must not be summarised as if
 their content had been read.
 
-**Built-in direct mode closes that gap** with a `reduce` pre-pass: a timeline summary sends the
-text of the articles the prompt cannot carry as `body`, the main process summarizes them in batches
-(`apps/desktop/layer/main/src/local-ai/reduce.ts`, 8 articles or 16 000 characters per call, 3 at a
-time, notes reused per article/model/language) and attaches the notes to the prompt. The coverage
-note then reads `… 20 with text, 78 summarised from their text …`, and those articles count as read
-instead of listed by title. The gateway has no such pre-pass yet — it renders what it receives, so
-its wide selections stay title-only until the same step is ported here.
+**Both modes close that gap** with a `reduce` pre-pass: a timeline summary sends the text of the
+articles the prompt cannot carry as `body`, the receiving side summarizes them in batches (8
+articles or 16 000 characters per call, three at a time, notes reused per article/model/language)
+and attaches the notes to the prompt. The coverage note then reads `… 20 with text, 78 summarised
+from their text …`, and those articles count as read instead of listed by title. The gateway keeps
+its copy in `server.mjs` (tuned by the `AI_REDUCE_*` variables above), the app keeps its own in
+`apps/desktop/layer/main/src/local-ai/reduce.ts` (tuned in Settings → AI → Advanced).
 
 ## 3. Verify
 
@@ -182,7 +189,7 @@ purpose, so the two paths can be compared line by line.
 | Configuration                                                                     | `.env` + `GATEWAY_TOKEN`                                       | `Settings → AI` (address and model list stay on the device, the API key is encrypted with the OS keyring) |
 | Endpoint                                                                          | `AI_BASE_URL`                                                  | one OpenAI-compatible endpoint per install                                                                |
 | Extra tuning (`AI_SUMMARY_CHUNK_CHARS`, `AI_HEADERS`, translation concurrency, …) | yes                                                            | no: the defaults are compiled in                                                                          |
-| Wide selections (a summary of a whole day)                                        | articles beyond the budget stay listed by title                | summarized into notes first (`reduce` pre-pass), so every matched article is read                         |
+| Wide selections (a summary of a whole day)                                        | summarized into notes first (`reduce` pre-pass)                | same pre-pass, with the knobs in Settings → AI → Advanced                                                 |
 | Translation delivery                                                              | NDJSON streamed line by line, so entries appear as they finish | buffered: IPC answers a batch in one piece, so the translations appear together                           |
 | System proxy                                                                      | follows `HTTP(S)_PROXY` of its shell                           | follows the same proxy as the rest of the app (Chromium's `net.fetch`)                                    |
 
@@ -206,11 +213,11 @@ change there has to be mirrored in the direct mode (and vice versa) to keep them
 - **Chat history stays local**: sessions started against the gateway are never marked as synced and
   are not sent to Folo (`markSessionSynced`, the session sync, the unread query and session deletion
   all skip the backend). Task sessions / `Settings → AI` task lists still come from Folo.
-- **A wide summary in direct mode runs a pre-pass**: the first "summarize today" over ~100 matched
+- **A wide summary runs a pre-pass**: the first "summarize today" over ~100 matched
   articles answers a few articles per call before the answer starts, so the first tokens take
-  noticeably longer (the log prints `[local-ai] reduce: …` when it finishes, and the notes are
-  cached for the rest of the session, so repeating the same summary is immediate). Closing the chat
-  window stops the work; the Stop button takes effect once the answer stream has opened.
+  noticeably longer (the log prints `reduce: …` when it finishes, and the notes are cached for the
+  rest of the process, so repeating the same summary is immediate). Closing the chat window stops
+  the work; the Stop button takes effect once the answer stream has opened.
 - Both the plan gate for BYOK and AI quota live on Folo's servers; the local path bypasses them for
   the three endpoints above. Review your own situation before using this with a Folo account you
   care about — see the project README and Folo's Terms of Service.
