@@ -321,7 +321,7 @@
   "settings.localGateway.direct.advanced.extraRequestBody.invalid": "That is not a valid JSON object",
   "settings.localGateway.direct.advanced.extraRequestBody.label": "Extra request body (JSON)",
   "settings.localGateway.direct.advanced.invalidNumber": "Enter a positive number",
-  "settings.localGateway.direct.advanced.maxOutputTokens.description": "Cap of a single answer. Reasoning models spend part of it on thinking, so a cap that is too small can leave an empty reply.",
+  "settings.localGateway.direct.advanced.maxOutputTokens.description": "Output cap of every model call (chat, summary, translation, title). It is a ceiling rather than a target, and reasoning models spend part of it on thinking.",
   "settings.localGateway.direct.advanced.maxOutputTokens.label": "Max output tokens",
   "settings.localGateway.direct.advanced.reasoningEffort.default": "Provider default",
   "settings.localGateway.direct.advanced.reasoningEffort.description": "How hard the model may think before answering. Providers that do not support it ignore the setting.",

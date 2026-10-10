@@ -311,6 +311,20 @@ describe("routeLocalAIRequest", () => {
     await expect(response.json()).resolves.toEqual({ title: "A short answer" })
   })
 
+  test("writes a title with the same budget as every other call", async () => {
+    const calls = stubUpstream(() => completion("Tidy"))
+
+    const response = await route({
+      path: "/ai/summary-title",
+      config: { ...config, maxOutputTokens: 1234 },
+      body: JSON.stringify({ messages: [{ role: "user", content: "hello" }] }),
+    })
+
+    await response.json()
+
+    expect(calls[0]!.body).toMatchObject({ max_tokens: 1234 })
+  })
+
   test("serves a translation batch end to end", async () => {
     stubUpstream(() => completion(JSON.stringify({ title: "Titel" })))
 

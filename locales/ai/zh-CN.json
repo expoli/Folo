@@ -321,7 +321,7 @@
   "settings.localGateway.direct.advanced.extraRequestBody.invalid": "不是合法的 JSON 对象",
   "settings.localGateway.direct.advanced.extraRequestBody.label": "扩展请求体（JSON）",
   "settings.localGateway.direct.advanced.invalidNumber": "请输入正数",
-  "settings.localGateway.direct.advanced.maxOutputTokens.description": "单次回答的输出上限。推理模型会占用其中一部分做思考，上限过小可能只剩空回复。",
+  "settings.localGateway.direct.advanced.maxOutputTokens.description": "每次模型调用（聊天、摘要、翻译、标题）的输出上限。它是天花板而非目标值；推理模型会占用其中一部分做思考。",
   "settings.localGateway.direct.advanced.maxOutputTokens.label": "最大输出 token",
   "settings.localGateway.direct.advanced.reasoningEffort.default": "供应商默认",
   "settings.localGateway.direct.advanced.reasoningEffort.description": "回答前允许模型思考的程度。不支持的供应商会忽略该设置。",

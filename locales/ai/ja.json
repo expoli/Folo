@@ -321,7 +321,7 @@
   "settings.localGateway.direct.advanced.extraRequestBody.invalid": "有効な JSON オブジェクトではありません",
   "settings.localGateway.direct.advanced.extraRequestBody.label": "拡張リクエストボディ (JSON)",
   "settings.localGateway.direct.advanced.invalidNumber": "正の数を入力してください",
-  "settings.localGateway.direct.advanced.maxOutputTokens.description": "1 回の回答の上限です。推論モデルは一部を思考に使うため、小さすぎると空の回答になります。",
+  "settings.localGateway.direct.advanced.maxOutputTokens.description": "すべてのモデル呼び出し（チャット・要約・翻訳・タイトル）の出力上限です。目標値ではなく上限で、推論モデルは一部を思考に使います。",
   "settings.localGateway.direct.advanced.maxOutputTokens.label": "最大出力トークン",
   "settings.localGateway.direct.advanced.reasoningEffort.default": "プロバイダーの既定",
   "settings.localGateway.direct.advanced.reasoningEffort.description": "回答前にモデルが考える度合いです。未対応のプロバイダーは無視します。",

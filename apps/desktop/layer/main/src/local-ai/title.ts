@@ -4,18 +4,12 @@ import { generateText } from "ai"
 import { jsonResponse } from "./http"
 import { DEFAULT_TITLE_SYSTEM_PROMPT, languageName } from "./prompts"
 import type { DirectCallOptions } from "./provider"
+import { MAX_OUTPUT_TOKENS } from "./provider"
 
 /**
  * `POST /ai/summary-title`: Folo's server writes a short title for a chat; with a local model the
  * main process asks the same model instead, so the "generate title" action needs no Folo API.
  */
-/**
- * Budget of a title call. A reasoning model spends hundreds of tokens thinking before it writes six
- * words, and a cap its thinking uses up leaves no title at all (`finish=length`, everything counted
- * as reasoning), so this is generous on purpose.
- */
-export const TITLE_MAX_OUTPUT_TOKENS = 4096
-
 /**
  * First words of the conversation, used when the model returns no text at all: a button that does
  * nothing is worse than a title taken from the answer it just wrote.
@@ -79,11 +73,9 @@ export const handleSummaryTitleRequest = async (params: {
       .filter(Boolean)
       .join(" "),
     prompt: transcript,
-    // The configured cap may lower this one, but never raise it: a short answer needs no more.
-    maxOutputTokens: Math.min(
-      params.call?.maxOutputTokens ?? TITLE_MAX_OUTPUT_TOKENS,
-      TITLE_MAX_OUTPUT_TOKENS,
-    ),
+    // The same budget as every other call: it is a ceiling, not a target, and a smaller one would
+    // only cut a reasoning model off before it writes the title.
+    maxOutputTokens: params.call?.maxOutputTokens ?? MAX_OUTPUT_TOKENS,
     temperature: params.call?.temperature,
     providerOptions: params.call?.providerOptions,
   })

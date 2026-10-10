@@ -549,7 +549,8 @@ const handleSummaryTitle = async (req, res, body) => {
       .join(" "),
     prompt: transcript,
     temperature: config.temperature,
-    maxOutputTokens: 512,
+    // The same budget as every other call: a ceiling, not a target.
+    maxOutputTokens: config.maxOutputTokens,
   })
 
   const title = cleanTitle(text)
