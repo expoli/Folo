@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from "vitest"
 
+import type { ArticleFetchResult } from "./article-text"
 import {
   applyFetchedTexts,
   collectFetchTargets,
@@ -72,7 +73,11 @@ describe("fetchArticleTexts", () => {
   ]
 
   test("collects the texts it could read and counts the rest", async () => {
-    const fetchText = vi.fn(async (url: string) => (url.endsWith("/2") ? null : `Text of ${url}`))
+    const fetchText = vi.fn(async (url: string): Promise<ArticleFetchResult> =>
+      url.endsWith("/2")
+        ? { ok: false, reason: "too-short" }
+        : { ok: true, text: `Text of ${url}` },
+    )
     const progress: string[] = []
 
     const result = await fetchArticleTexts({
@@ -87,7 +92,7 @@ describe("fetchArticleTexts", () => {
       [1, "Text of https://example.com/1"],
       [3, "Text of https://example.com/3"],
     ])
-    expect(result.failed).toBe(1)
+    expect(result.failures).toEqual({ unreachable: 0, "too-short": 1, aborted: 0 })
     expect(progress[0]).toBe("0/3")
     expect(progress.at(-1)).toBe("3/3")
     expect(fetchText).toHaveBeenCalledTimes(3)
@@ -97,7 +102,7 @@ describe("fetchArticleTexts", () => {
     const controller = new AbortController()
     const fetchText = vi.fn(async () => {
       controller.abort()
-      return null
+      return { ok: false, reason: "aborted" } as const
     })
 
     await fetchArticleTexts({
@@ -116,7 +121,7 @@ describe("fetchArticleTexts", () => {
     expect(await fetchArticleTexts({ targets: [], fetchText })).toEqual({
       texts: new Map(),
       attempted: 0,
-      failed: 0,
+      failures: { unreachable: 0, "too-short": 0, aborted: 0 },
       skipped: 0,
     })
     expect(fetchText).not.toHaveBeenCalled()
@@ -126,7 +131,7 @@ describe("fetchArticleTexts", () => {
     const fetchText = vi.fn(async () => {
       // One slow page is enough for the budget to be gone when the next one would start.
       await new Promise((resolve) => setTimeout(resolve, 20))
-      return "Fetched"
+      return { ok: true, text: "Fetched" } as const
     })
 
     const result = await fetchArticleTexts({

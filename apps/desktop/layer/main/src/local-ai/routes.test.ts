@@ -101,7 +101,9 @@ const sseStream = (text: string) => {
 beforeEach(() => {
   // The model list is cached between requests; cases have to start from a clean slate.
   resetModelListCache()
-  pageFetch.fetchArticleText.mockReset().mockResolvedValue("Fetched article text. ".repeat(80))
+  pageFetch.fetchArticleText
+    .mockReset()
+    .mockResolvedValue({ ok: true, text: "Fetched article text. ".repeat(80) })
 })
 
 afterEach(() => {

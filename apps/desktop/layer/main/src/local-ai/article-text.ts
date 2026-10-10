@@ -35,10 +35,18 @@ export interface FetchTarget {
   url: string
 }
 
+/**
+ * Why a page did not yield an article: the host could not be read, the page parsed to less than an
+ * excerpt (paywall, cookie wall, a listing), or the request was stopped.
+ */
+export type FetchFailure = "unreachable" | "too-short" | "aborted"
+
+export type ArticleFetchResult = { ok: true; text: string } | { ok: false; reason: FetchFailure }
+
 export type ArticleFetcher = (
   url: string,
   options: { signal?: AbortSignal; timeoutMs: number },
-) => Promise<string | null>
+) => Promise<ArticleFetchResult>
 
 /**
  * True when the text looks like the markup of a page instead of what a reader would read.
@@ -79,7 +87,7 @@ export const htmlToText = (text: string) =>
 /** The text a prompt should carry: the markup of a page, when that is what arrived, flattened. */
 export const promptText = (text: string) => (looksLikeHtml(text) ? htmlToText(text) : text)
 
-/** Fetches and parses one article; `null` when the page cannot be read. */
+/** Fetches and parses one article, saying why a page did not become one. */
 export const fetchArticleText: ArticleFetcher = async (url, { signal, timeoutMs }) => {
   const controller = new AbortController()
   const abort = () => controller.abort()
@@ -93,12 +101,14 @@ export const fetchArticleText: ArticleFetcher = async (url, { signal, timeoutMs 
     })
 
     const text = typeof result?.textContent === "string" ? result.textContent.trim() : ""
+    if (signal?.aborted) return { ok: false, reason: "aborted" }
+
     // The pass exists because a short excerpt was too little: something that parses shorter than
     // one is usually a paywall, a cookie wall or a stub, and the excerpt reads better.
-    return text && text.length >= FETCH_MIN_CHARS ? text : null
+    return text.length >= FETCH_MIN_CHARS ? { ok: true, text } : { ok: false, reason: "too-short" }
   } catch {
     // Unreachable, blocked, not a page, timed out: the entry keeps the text it arrived with.
-    return null
+    return { ok: false, reason: signal?.aborted ? "aborted" : "unreachable" }
   } finally {
     clearTimeout(timeout)
     signal?.removeEventListener("abort", abort)
@@ -133,8 +143,8 @@ export interface FetchedArticles {
   /** Entry position → the article text, only for the fetches that produced one. */
   texts: Map<number, string>
   attempted: number
-  /** Pages that could not be read, or read shorter than an excerpt. */
-  failed: number
+  /** How many pages failed, and why: a different reason needs a different answer. */
+  failures: Record<FetchFailure, number>
   /** Pages never started because the pass ran out of its time budget. */
   skipped: number
 }
@@ -163,8 +173,8 @@ export const fetchArticleTexts = async (params: {
   } = params
   const texts = new Map<number, string>()
   const startedAt = Date.now()
+  const failures: Record<FetchFailure, number> = { unreachable: 0, "too-short": 0, aborted: 0 }
   let cursor = 0
-  let failed = 0
   let done = 0
   let skipped = 0
 
@@ -182,9 +192,9 @@ export const fetchArticleTexts = async (params: {
       cursor += 1
       if (!target) return
 
-      const text = await fetchText(target.url, { signal, timeoutMs })
-      if (text) texts.set(target.index, text)
-      else failed += 1
+      const result = await fetchText(target.url, { signal, timeoutMs })
+      if (result.ok) texts.set(target.index, result.text)
+      else failures[result.reason] += 1
 
       done += 1
       onProgress?.(done, targets.length)
@@ -195,13 +205,19 @@ export const fetchArticleTexts = async (params: {
     Array.from({ length: Math.max(1, Math.min(concurrency, targets.length)) }, () => worker()),
   )
 
+  const reasons = [
+    failures.unreachable > 0 ? `${failures.unreachable} unreachable` : "",
+    failures["too-short"] > 0 ? `${failures["too-short"]} too short to be an article` : "",
+    failures.aborted > 0 ? `${failures.aborted} stopped` : "",
+    skipped > 0 ? `${skipped} skipped after ${budgetMs}ms` : "",
+  ].filter(Boolean)
+
   log?.(
-    `[local-ai] fetch: ${texts.size} of ${targets.length} article text(s) read ` +
-      `(${failed} unusable${skipped > 0 ? `, ${skipped} skipped after ${budgetMs}ms` : ""}) in ` +
-      `${Date.now() - startedAt}ms`,
+    `[local-ai] fetch: ${texts.size} of ${targets.length} article text(s) read` +
+      `${reasons.length > 0 ? ` (${reasons.join(", ")})` : ""} in ${Date.now() - startedAt}ms`,
   )
 
-  return { texts, attempted: targets.length, failed, skipped }
+  return { texts, attempted: targets.length, failures, skipped }
 }
 
 /**
