@@ -105,6 +105,13 @@ AI_CONTEXT_MAX_TOTAL_CHARS=60000   # whole request; a single referenced article 
 These values are served by `GET /ai/chat/config` (`localAIContext`). A client build that predates
 the field — or a gateway that predates it — falls back to 20 articles x 1500 characters.
 
+Within that budget the client sends article texts, and every entry the selection matched beyond
+them by its metadata alone (title, link, date — up to 200 rows, with a listing allowance equal to
+`AI_CONTEXT_MAX_TOTAL_CHARS`). The request also carries `coverage: { matched, window? }`, which the
+gateway renders as a `Coverage: …` note before the entries: a summary of "today" should hear that
+it saw 20 of 137 articles, and entries marked `(no text attached)` must not be summarised as if
+their content had been read.
+
 ## 3. Verify
 
 ```bash

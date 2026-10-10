@@ -47,7 +47,15 @@ const chunk = (delta, finishReason, model) => ({
   choices: [{ index: 0, delta, finish_reason: finishReason }],
 })
 
+/** The last upstream request, so the check can read the prompt the gateway built. */
+let lastRequest = null
+
 const server = createServer(async (req, res) => {
+  if (req.url === "/__last-request") {
+    res.writeHead(200, { "Content-Type": "application/json" })
+    res.end(JSON.stringify(lastRequest))
+    return
+  }
   if (!req.url?.startsWith("/v1/chat/completions")) {
     res.writeHead(404, { "Content-Type": "application/json" })
     res.end(JSON.stringify({ error: { message: `Unsupported ${req.method} ${req.url}` } }))
@@ -55,6 +63,7 @@ const server = createServer(async (req, res) => {
   }
 
   const body = await readBody(req)
+  lastRequest = body
   const model = body.model || "mock-model"
   const prompt = JSON.stringify(body.messages || [])
   const answer = completionFor(prompt)

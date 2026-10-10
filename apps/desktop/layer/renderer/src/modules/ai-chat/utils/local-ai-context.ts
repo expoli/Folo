@@ -40,6 +40,18 @@ export interface LocalAIContext {
   entries: LocalAIContextEntry[]
   /** Only set for feed-recommendation prompts. */
   feeds?: LocalAIFeedCandidate[]
+  /**
+   * How much of the selection made it into `entries`. A summary of "today" must not read as if it
+   * covered the day when the budget only carried the newest handful of articles.
+   */
+  coverage?: LocalAIContextCoverage
+}
+
+export interface LocalAIContextCoverage {
+  /** Entries the selection matched (timeline blocks, date window, unread filter) before any cut. */
+  matched: number
+  /** The window the prompt named, when it named one, for the note the model reads. */
+  window?: string
 }
 
 export interface BuildLocalAIContextOptions {
@@ -202,26 +214,50 @@ export const parseMentionDateWindow = (
   return null
 }
 
-/** Writes entries into the gateway payload while staying inside the announced text budget. */
+/**
+ * How many matched entries travel with a request. Only the first few carry text; the rest are
+ * listed by their metadata so a wide selection stays visible instead of being cut off silently.
+ */
+const LISTED_ENTRY_LIMIT = 200
+
+/** Roughly what one title-only row costs the prompt: its title, its link and the date around them. */
+const metadataChars = (entry: EntryModel) =>
+  (entry.title?.length ?? 0) + (entry.url?.length ?? 0) + 40
+
 const takeEntries = (
   ordered: EntryModel[],
   options: {
+    /** Entries allowed to carry their text; the rest are listed by metadata only. */
     maxEntries: number
     perEntryLimit: number
     budget: ReturnType<typeof getLocalAIContextBudget>
+    listedLimit?: number
+    /** Text allowance for the metadata rows of the entries that carry no body. */
+    listedChars?: number
   },
-): LocalAIContextEntry[] => {
+): { entries: LocalAIContextEntry[]; withBody: number } => {
   const entries: LocalAIContextEntry[] = []
+  const listedLimit = options.listedLimit ?? LISTED_ENTRY_LIMIT
   let remainingChars = options.budget.maxTotalChars
+  // The listing has an allowance of its own: bodies using up the text budget must not also erase
+  // the coverage of the entries they left out.
+  let remainingListing = options.listedChars ?? options.budget.maxTotalChars
+  let withBody = 0
 
-  for (const entry of ordered.slice(0, options.maxEntries)) {
-    if (remainingChars <= 0) break
+  for (const entry of ordered) {
+    if (entries.length >= listedLimit || remainingListing <= 0) break
 
-    const source = entryText(entry).trim()
-    const limit = Math.min(options.perEntryLimit, remainingChars)
-    const content = source ? truncateText(source, limit) : null
-    // Charge what actually travels against the budget, inline truncation marker included.
-    remainingChars -= content?.length ?? 0
+    const source = withBody < options.maxEntries ? entryText(entry).trim() : ""
+    const limit = Math.min(options.perEntryLimit, Math.max(0, remainingChars))
+    const content = source && limit > 0 ? truncateText(source, limit) : null
+    // Charge what actually travels: the article text against the text budget (inline truncation
+    // marker included), a title-only row against the listing allowance.
+    if (content) {
+      withBody += 1
+      remainingChars -= content.length
+    } else {
+      remainingListing -= metadataChars(entry)
+    }
 
     entries.push({
       id: entry.id,
@@ -233,7 +269,13 @@ const takeEntries = (
     })
   }
 
-  return entries
+  return { entries, withBody }
+}
+
+/** Whether an entry falls inside the period the prompt named. */
+const isInWindow = (entry: EntryModel, window: LocalAITimelineWindow) => {
+  const publishedAt = entry.publishedAt.getTime()
+  return publishedAt >= window.start.valueOf() && publishedAt <= window.end.valueOf()
 }
 
 /**
@@ -241,28 +283,25 @@ const takeEntries = (
  * timeline. Locally the client gathers the entries the prompt asks about (its date window).
  */
 const buildTimelineContext = (
-  question: string,
-  now: Dayjs,
-): { label: string; entries: LocalAIContextEntry[] } | null => {
-  const window = parseMentionDateWindow(question, now)
-  if (!window) return null
-
+  window: LocalAITimelineWindow,
+): { label: string; entries: LocalAIContextEntry[]; matched: number } => {
   const budget = getLocalAIContextBudget()
   const viewIds = useEntryStore.getState().entryIdByView[FeedViewType.All] ?? new Set<string>()
   const inWindow = Array.from(viewIds)
     .map((entryId) => getEntry(entryId))
     .filter((entry): entry is EntryModel => !!entry)
-    .filter((entry) => {
-      const publishedAt = entry.publishedAt.getTime()
-      return publishedAt >= window.start.valueOf() && publishedAt <= window.end.valueOf()
-    })
+    .filter((entry) => isInWindow(entry, window))
     .sort((a, b) => b.publishedAt.getTime() - a.publishedAt.getTime())
 
-  if (inWindow.length === 0) return null
+  if (inWindow.length === 0) {
+    // The window exists but holds nothing: an empty selection that says so beats no context at all.
+    return { label: window.label, entries: [], matched: 0 }
+  }
 
-  // A timeline summary wants breadth, so the text budget is shared between the entries.
+  // A timeline summary wants breadth, so the text budget is shared between the entries; the ones
+  // that do not fit are still listed by their metadata.
   const considered = Math.min(inWindow.length, budget.maxEntries)
-  const entries = takeEntries(inWindow, {
+  const { entries } = takeEntries(inWindow, {
     maxEntries: budget.maxEntries,
     perEntryLimit: Math.min(
       budget.maxCharsPerEntry,
@@ -271,7 +310,7 @@ const buildTimelineContext = (
     budget,
   })
 
-  return entries.length > 0 ? { label: window.label, entries } : null
+  return { label: window.label, entries, matched: inWindow.length }
 }
 
 /**
@@ -377,11 +416,14 @@ export const buildLocalAIContext = (
 
   const question = options.question ?? localAIContextQuestion(parts)
   const feeds = options.feedCandidates?.length ? options.feedCandidates : null
+  const now = options.now ?? dayjs()
+  // A prompt that names a period ("today") narrows the selection; it never widens it.
+  const window = parseMentionDateWindow(question, now)
 
   if (blocks.length === 0) {
     // Folo's built-in shortcuts ship no context blocks (upstream the server resolves them), so the
     // client gathers what a local gateway cannot reach itself.
-    const timeline = buildTimelineContext(question, options.now ?? dayjs())
+    const timeline = window ? buildTimelineContext(window) : null
     if (!timeline && !feeds) return null
 
     return {
@@ -390,6 +432,7 @@ export const buildLocalAIContext = (
         ...(feeds ? [{ type: "feedCandidates", value: String(feeds.length) }] : []),
       ],
       entries: timeline?.entries ?? [],
+      ...(timeline ? { coverage: { matched: timeline.matched, window: timeline.label } } : {}),
       ...(feeds ? { feeds } : {}),
     }
   }
@@ -404,9 +447,12 @@ export const buildLocalAIContext = (
     (block) =>
       block.type === "mainFeed" || block.type === "mainView" || block.type === "unreadOnly",
   )
-  const candidates: EntryModel[] = hasTimelineBlock
-    ? resolveScopeEntries(readContextScope(blocks))
-    : []
+  const scoped = hasTimelineBlock ? resolveScopeEntries(readContextScope(blocks)) : []
+  // The window applies here too: a summary of "today" that silently covered the newest entries of
+  // the entire view would answer about the wrong period.
+  const candidates: EntryModel[] = window
+    ? scoped.filter((entry) => isInWindow(entry, window))
+    : scoped
 
   if (hasTimelineBlock) {
     const seen = new Set(candidates.map((entry) => entry.id))
@@ -425,7 +471,11 @@ export const buildLocalAIContext = (
     }
   }
 
-  if (candidates.length === 0) return null
+  if (candidates.length === 0) {
+    // With a window, an empty selection is worth reporting: the answer should say the period holds
+    // nothing instead of quietly reading the whole view.
+    return window ? { blocks, entries: [], coverage: { matched: 0, window: window.label } } : null
+  }
 
   const budget = getLocalAIContextBudget()
   const terms = questionTerms(question)
@@ -449,7 +499,7 @@ export const buildLocalAIContext = (
 
   // A single article is the subject of the conversation, so it travels in full.
   const singleEntry = ordered.length === 1
-  const entries = takeEntries(ordered, {
+  const { entries } = takeEntries(ordered, {
     maxEntries: singleEntry ? 1 : budget.maxEntries,
     perEntryLimit: singleEntry ? budget.maxTotalChars : budget.maxCharsPerEntry,
     budget,
@@ -457,5 +507,9 @@ export const buildLocalAIContext = (
 
   if (entries.length === 0) return null
 
-  return { blocks, entries }
+  return {
+    blocks,
+    entries,
+    coverage: { matched: ordered.length, ...(window ? { window: window.label } : {}) },
+  }
 }

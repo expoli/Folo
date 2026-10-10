@@ -87,15 +87,64 @@ export interface LocalAIContext {
   entries?: ContextEntry[]
   feeds?: ContextFeed[]
   blocks?: ContextBlock[]
+  coverage?: ContextCoverage
+}
+
+interface ContextCoverage {
+  /** Entries the client's selection matched before the text budget was applied. */
+  matched?: unknown
+  /** The period the prompt named ("Today"), when it named one. */
+  window?: unknown
 }
 
 const asText = (value: unknown) => (typeof value === "string" && value ? value : "")
+
+/**
+ * What the selection matched versus what the text budget could carry. A summary of "today" must not
+ * read as if it covered the day when only the newest articles travelled with the request, and an
+ * entry listed by title alone must not be summarised as if it had been read.
+ */
+const formatCoverage = (context: LocalAIContext, entries: ContextEntry[]): string => {
+  const matched =
+    typeof context.coverage?.matched === "number" ? context.coverage.matched : entries.length
+  const window = asText(context.coverage?.window)
+
+  if (matched === 0 && !window) return ""
+
+  const withText = entries.filter((entry) => asText(entry.content)).length
+  const listedOnly = entries.length - withText
+  const leftOut = Math.max(0, matched - entries.length)
+
+  // A plain chat whose articles all carry text has nothing to report: stay out of its prompt.
+  if (!window && listedOnly === 0 && leftOut === 0) return ""
+
+  const counts = [
+    window ? `window "${window}"` : "",
+    `${matched} matched`,
+    `${withText} with text`,
+    listedOnly > 0 ? `${listedOnly} title-only` : "",
+    leftOut > 0 ? `${leftOut} not listed` : "",
+  ].filter(Boolean)
+
+  return [
+    `Coverage: ${counts.join(", ")}.`,
+    matched === 0 && window
+      ? "The window holds no entry: say so instead of describing entries outside it."
+      : "",
+    listedOnly > 0
+      ? 'Entries marked "(no text attached)" were not read — never summarise them as if their content were known.'
+      : "",
+  ]
+    .filter(Boolean)
+    .join(" ")
+}
 
 /** Renders the entries the client resolved from the chat context bar. */
 export const formatLocalContext = (context: LocalAIContext | null | undefined): string => {
   const contextEntries = Array.isArray(context?.entries) ? context.entries : []
   const feeds = Array.isArray(context?.feeds) ? context.feeds : []
-  if (contextEntries.length === 0 && feeds.length === 0) return ""
+  const coverage = formatCoverage(context ?? {}, contextEntries)
+  if (contextEntries.length === 0 && feeds.length === 0 && coverage === "") return ""
 
   const contextBlocks = Array.isArray(context?.blocks) ? context.blocks : []
   const blocks = contextBlocks
@@ -112,7 +161,7 @@ export const formatLocalContext = (context: LocalAIContext | null | undefined): 
       ]
         .filter(Boolean)
         .join(" — ")
-      return `### [${index + 1}] ${header}\n${asText(entry.content) || "(no content available)"}`
+      return `### [${index + 1}] ${header}\n${asText(entry.content) || "(no text attached)"}`
     })
     .join("\n\n")
 
@@ -137,7 +186,7 @@ export const formatLocalContext = (context: LocalAIContext | null | undefined): 
     .filter(Boolean)
     .join("\n")
 
-  const body = [entries, feedSection].filter(Boolean).join("\n\n")
+  const body = [coverage, entries, feedSection].filter(Boolean).join("\n\n")
 
   return [header, body].filter(Boolean).join("\n\n")
 }
@@ -169,9 +218,16 @@ export const describeChatContext = (context: LocalAIContext | null | undefined) 
   const blocks = Array.isArray(context?.blocks) ? context.blocks : []
 
   let contextChars = 0
+  let withText = 0
   for (const entry of entries) {
-    if (entry && typeof entry.content === "string") contextChars += entry.content.length
+    if (entry && typeof entry.content === "string" && entry.content) {
+      contextChars += entry.content.length
+      withText += 1
+    }
   }
+
+  const matched =
+    typeof context?.coverage?.matched === "number" ? context.coverage.matched : entries.length
 
   // The selection the client sent, so a wrong scope (a feed summary that covered every feed) is
   // visible in the log instead of having to be inferred from the answer.
@@ -182,6 +238,8 @@ export const describeChatContext = (context: LocalAIContext | null | undefined) 
   return {
     blocks: blocks.length,
     entries: entries.length,
+    withText,
+    matched,
     feeds: feeds.length,
     contextChars,
     selection,

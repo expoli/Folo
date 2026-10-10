@@ -14,6 +14,8 @@
 import { parseJsonEventStream, uiMessageChunkSchema } from "ai"
 
 const gatewayUrl = (process.env.GATEWAY_URL || "http://127.0.0.1:8788").replace(/\/+$/, "")
+// Only the coverage check below reads the mock back; a real upstream simply has no such endpoint.
+const mockUrl = (process.env.MOCK_URL || "http://127.0.0.1:8799").replace(/\/+$/, "")
 const token = process.env.GATEWAY_TOKEN || ""
 
 const headers = {
@@ -88,6 +90,69 @@ await check("GET /ai/chat/:id/stream answers 204 (no resumable stream)", async (
   const response = await fetch(`${gatewayUrl}/ai/chat/some-chat-id/stream`, { headers })
   assert(response.status === 204, `expected 204, got ${response.status}`)
   return "204"
+})
+
+await check("POST /ai/chat renders the coverage of a partial selection", async () => {
+  const response = await fetch(`${gatewayUrl}/ai/chat`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      id: "chat-coverage",
+      trigger: "submit-message",
+      model: "mock-model",
+      scene: "general",
+      localAIContext: {
+        blocks: [{ type: "mainView", value: "0" }],
+        coverage: { matched: 40, window: "Today" },
+        entries: [
+          {
+            id: "entry-1",
+            title: "With text",
+            url: "https://example.com/a",
+            publishedAt: "2026-10-10T08:00:00.000Z",
+            content: "Body",
+          },
+          {
+            id: "entry-2",
+            title: "Without text",
+            url: "https://example.com/b",
+            publishedAt: "2026-10-10T07:00:00.000Z",
+          },
+        ],
+      },
+      messages: [
+        {
+          id: "message-1",
+          role: "user",
+          parts: [{ type: "data-rich-text", data: { state: "{}", text: "Summarize today" } }],
+        },
+      ],
+    }),
+  })
+
+  assert(response.ok, `status ${response.status}`)
+  await response.text()
+
+  const captured = await fetch(`${mockUrl}/__last-request`)
+  assert(captured.ok, `mock upstream captured no request (${captured.status}; is it running?)`)
+  const upstream = await captured.json()
+  const prompt = (upstream?.messages ?? []).map((message) => message.content ?? "").join("\n")
+
+  // The prompt is what the model reads; the model's answer alone cannot show that it arrived, and
+  // the gateway's copy of the renderer has no other test.
+  assert(
+    prompt.includes(
+      'Coverage: window "Today", 40 matched, 1 with text, 1 title-only, 38 not listed.',
+    ),
+    "coverage line missing from the prompt",
+  )
+  assert(prompt.includes("(no text attached)"), "title-only marker missing from the prompt")
+  assert(
+    prompt.includes("never summarise them as if their content were known"),
+    "the reading rule is missing from the prompt",
+  )
+
+  return "coverage, marker and rule all reached the model"
 })
 
 await check("POST /ai/chat streams parseable UI message chunks", async () => {

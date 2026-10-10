@@ -174,18 +174,38 @@ describe("buildLocalAIContext", () => {
 
     const context = buildLocalAIContext([blockPart([allEntriesBlock()])])
 
-    expect(context?.entries.map((entry) => entry.id)).toEqual(["entry-1", "entry-2"])
+    // The entry that no longer fits the budget is still listed, so nothing is dropped silently.
+    expect(context?.entries.map((entry) => entry.id)).toEqual(["entry-1", "entry-2", "entry-3"])
     expect(context?.entries[0]?.content).toBe("a".repeat(700))
     expect(context?.entries[1]?.content).toBe(`${"b".repeat(300)}\n…[truncated 400 chars]`)
+    expect(context?.entries[2]?.content).toBeNull()
+    expect(context?.coverage).toEqual({ matched: 3 })
   })
 
-  test("honors the entry count limit", () => {
+  test("limits the entries that carry text and lists the rest", () => {
     setLocalAIContextBudget({ maxEntries: 1, maxTotalChars: 10_000 })
-    setEntries([createEntry("entry-1"), createEntry("entry-2")])
+    setEntries([createEntry("entry-1"), createEntry("entry-2"), createEntry("entry-3")])
 
     const context = buildLocalAIContext([blockPart([allEntriesBlock()])])
 
-    expect(context?.entries.map((entry) => entry.id)).toEqual(["entry-1"])
+    expect(context?.entries.map((entry) => entry.id)).toEqual(["entry-1", "entry-2", "entry-3"])
+    expect(context?.entries.map((entry) => entry.content)).toEqual(["Body entry-1", null, null])
+    expect(context?.coverage).toEqual({ matched: 3 })
+  })
+
+  test("charges the title-only rows against the announced budget", () => {
+    setLocalAIContextBudget({ maxEntries: 1, maxTotalChars: 400 })
+    setEntries([
+      createEntry("main", { content: "x".repeat(200) }),
+      ...Array.from({ length: 10 }, (_, index) => createEntry(`tail-${index}`)),
+    ])
+
+    const context = buildLocalAIContext([blockPart([allEntriesBlock()])])
+
+    expect(context?.coverage).toEqual({ matched: 11 })
+    // The listing stops once the budget is spent instead of growing the prompt without bound.
+    expect(context!.entries.length).toBeLessThan(11)
+    expect(context!.entries.at(-1)?.content).toBeNull()
   })
 
   test("only sends unread entries for an unreadOnly block", () => {
@@ -340,15 +360,18 @@ describe("implicit timeline context", () => {
     expect(context?.entries.map((entry) => entry.id)).toEqual(["late"])
   })
 
-  test("stays empty without a date mention or without entries in the window", () => {
+  test("stays empty without a date mention, and reports an empty window", () => {
     setEntries([createEntry("old", { publishedAt: new Date("2025-01-01T09:00:00.000Z") })])
 
     expect(buildLocalAIContext([questionPart("what did I miss?")], { now })).toBeNull()
-    expect(
-      buildLocalAIContext([questionPart('<mention-date text="24hoursago"></mention-date>')], {
-        now,
-      }),
-    ).toBeNull()
+
+    // The window is real but holds nothing: the model should hear that, not read the whole view.
+    const empty = buildLocalAIContext(
+      [questionPart('<mention-date text="24hoursago"></mention-date>')],
+      { now },
+    )
+    expect(empty?.entries).toEqual([])
+    expect(empty?.coverage).toEqual({ matched: 0, window: "last 24 hours" })
   })
 })
 
@@ -475,6 +498,44 @@ describe("timeline scope of the context blocks", () => {
     expect(buildLocalAIContext([blockPart([unreadOnlyBlock()])])?.entries.map((e) => e.id)).toEqual(
       ["unread"],
     )
+  })
+
+  test("narrows the scope to the window the prompt names", () => {
+    const now = dayjs("2026-01-02T12:00:00.000Z")
+    setEntries([
+      createEntry("recent", { publishedAt: now.subtract(2, "hour").toDate() }),
+      createEntry("older", { publishedAt: now.subtract(3, "day").toDate() }),
+    ])
+
+    const context = buildLocalAIContext(
+      [
+        blockPart([allEntriesBlock()]),
+        questionPart('Summarize <mention-date text="24hoursago"></mention-date>.'),
+      ],
+      { now },
+    )
+
+    // Without the window this answered about the newest entries of the whole view instead.
+    expect(context?.entries.map((entry) => entry.id)).toEqual(["recent"])
+    expect(context?.coverage).toEqual({ matched: 1, window: "last 24 hours" })
+  })
+
+  test("keeps an explicitly referenced entry that the window would drop", () => {
+    const now = dayjs("2026-01-02T12:00:00.000Z")
+    setEntries([
+      createEntry("recent", { publishedAt: now.subtract(2, "hour").toDate() }),
+      createEntry("old", { publishedAt: now.subtract(3, "day").toDate() }),
+    ])
+
+    const context = buildLocalAIContext(
+      [
+        blockPart([allEntriesBlock(), mainEntryBlock("old")]),
+        questionPart('Explain <mention-date text="24hoursago"></mention-date>.'),
+      ],
+      { now },
+    )
+
+    expect(context?.entries.map((entry) => entry.id)).toEqual(["old", "recent"])
   })
 
   test("keeps a referenced article even when it sits outside the filter", () => {

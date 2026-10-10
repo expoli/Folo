@@ -43,7 +43,8 @@ export const createChatStreamResponse = (params: {
 
   console.log(
     `[local-ai] chat: model=${requestedModel ?? config.model} messages=${messages.length} ` +
-      `context=${stats.blocks} block(s)/${stats.entries} entrie(s)/${stats.feeds} feed(s)/${stats.contextChars} chars${
+      `context=${stats.blocks} block(s)/${stats.entries} entrie(s)(${stats.withText} with text)/` +
+      `${stats.matched} matched/${stats.feeds} feed(s)/${stats.contextChars} chars${
         stats.selection ? ` [${stats.selection}]` : ""
       }`,
   )

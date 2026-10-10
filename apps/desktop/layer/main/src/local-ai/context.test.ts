@@ -67,7 +67,48 @@ describe("formatLocalContext", () => {
     expect(context).toContain("### [1] First entry — https://example.com/1 — 2026-01-01")
     expect(context).toContain("Body of the first entry")
     expect(context).toContain("### [2] (untitled)")
-    expect(context).toContain("(no content available)")
+    expect(context).toContain("(no text attached)")
+  })
+
+  test("stays out of the prompt when every entry carries its text", () => {
+    const context = formatLocalContext({
+      entries: [{ title: "One", content: "Body" }],
+      coverage: { matched: 1 },
+    })
+
+    // Nothing was cut and no window was named, so the prompt reads exactly as it did before.
+    expect(context).not.toContain("Coverage:")
+    expect(context).toContain("Body")
+  })
+
+  test("reports how much of the selection the budget could carry", () => {
+    const context = formatLocalContext({
+      entries: [
+        { title: "Read one", content: "Body" },
+        { title: "Listed one" },
+        { title: "Listed two" },
+      ],
+      coverage: { matched: 137, window: "Today" },
+    })
+
+    expect(context).toContain(
+      'Coverage: window "Today", 137 matched, 1 with text, 2 title-only, 134 not listed.',
+    )
+    expect(context).toContain("never summarise them as if their content were known")
+    // The note comes before the entries, so the model reads the limit first.
+    expect(context?.indexOf("Coverage:")).toBeLessThan(context?.indexOf("### [1]") ?? 0)
+  })
+
+  test("says when the window holds nothing instead of staying silent", () => {
+    const context = formatLocalContext({
+      entries: [],
+      coverage: { matched: 0, window: "Yesterday" },
+      blocks: [{ type: "mainView", value: "0" }],
+    })
+
+    expect(context).toContain('Coverage: window "Yesterday", 0 matched, 0 with text.')
+    expect(context).toContain("The window holds no entry")
+    expect(context).toContain('Context selection: mainView="0"')
   })
 
   test("renders the feed candidates separately", () => {
@@ -141,6 +182,8 @@ describe("describeChatContext", () => {
     ).toEqual({
       blocks: 2,
       entries: 2,
+      withText: 2,
+      matched: 2,
       feeds: 1,
       contextChars: 8,
       // The selection is logged, so a wrong scope is visible without guessing.
@@ -148,10 +191,29 @@ describe("describeChatContext", () => {
     })
   })
 
+  test("reports how many matched entries carried text", () => {
+    expect(
+      describeChatContext({
+        entries: [{ content: "12345" }, { title: "no text" }, { title: "no text either" }],
+        coverage: { matched: 40, window: "Today" },
+      }),
+    ).toEqual({
+      blocks: 0,
+      entries: 3,
+      withText: 1,
+      matched: 40,
+      feeds: 0,
+      contextChars: 5,
+      selection: "",
+    })
+  })
+
   test("reports zeros for a request without context", () => {
     expect(describeChatContext(undefined)).toEqual({
       blocks: 0,
       entries: 0,
+      withText: 0,
+      matched: 0,
       feeds: 0,
       contextChars: 0,
       selection: "",

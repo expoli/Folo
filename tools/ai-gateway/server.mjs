@@ -242,11 +242,50 @@ const toModelMessages = (messages = []) =>
     })
     .filter(Boolean)
 
+/**
+ * What the selection matched versus what the text budget could carry, so a summary of "today" does
+ * not read as if it covered the day and a title-only entry is not summarised as if it were read.
+ */
+const formatCoverage = (context, entries) => {
+  const matched =
+    typeof context?.coverage?.matched === "number" ? context.coverage.matched : entries.length
+  const window = typeof context?.coverage?.window === "string" ? context.coverage.window : ""
+  if (matched === 0 && !window) return ""
+
+  const withText = entries.filter((entry) => entry?.content).length
+  const listedOnly = entries.length - withText
+  const leftOut = Math.max(0, matched - entries.length)
+
+  // A plain chat whose articles all carry text has nothing to report: stay out of its prompt.
+  if (!window && listedOnly === 0 && leftOut === 0) return ""
+
+  const counts = [
+    window ? `window "${window}"` : "",
+    `${matched} matched`,
+    `${withText} with text`,
+    listedOnly > 0 ? `${listedOnly} title-only` : "",
+    leftOut > 0 ? `${leftOut} not listed` : "",
+  ].filter(Boolean)
+
+  return [
+    `Coverage: ${counts.join(", ")}.`,
+    matched === 0 && window
+      ? "The window holds no entry: say so instead of describing entries outside it."
+      : "",
+    listedOnly > 0
+      ? 'Entries marked "(no text attached)" were not read — never summarise them as if their content were known.'
+      : "",
+  ]
+    .filter(Boolean)
+    .join(" ")
+}
+
 /** Renders the entries the client resolved from the chat context bar. */
 const formatLocalContext = (context) => {
   const contextEntries = Array.isArray(context?.entries) ? context.entries : []
   const feeds = Array.isArray(context?.feeds) ? context.feeds : []
-  if (contextEntries.length === 0 && feeds.length === 0) return ""
+  const coverage = formatCoverage(context, contextEntries)
+  if (contextEntries.length === 0 && feeds.length === 0 && coverage === "") return ""
 
   const blocks = Array.isArray(context.blocks)
     ? context.blocks
@@ -260,7 +299,7 @@ const formatLocalContext = (context) => {
       const header = [entry.title || "(untitled)", entry.url, entry.publishedAt]
         .filter(Boolean)
         .join(" — ")
-      return `### [${index + 1}] ${header}\n${entry.content || "(no content available)"}`
+      return `### [${index + 1}] ${header}\n${entry.content || "(no text attached)"}`
     })
     .join("\n\n")
 
@@ -283,7 +322,7 @@ const formatLocalContext = (context) => {
     .filter(Boolean)
     .join("\n")
 
-  const body = [entries, feedSection].filter(Boolean).join("\n\n")
+  const body = [coverage, entries, feedSection].filter(Boolean).join("\n\n")
 
   return [header, body].filter(Boolean).join("\n\n")
 }
@@ -340,9 +379,18 @@ const handleChat = async (req, res, body) => {
     ? body.localAIContext.feeds.length
     : 0
   let contextChars = 0
+  let contextWithText = 0
   for (const entry of body.localAIContext?.entries ?? []) {
-    if (typeof entry?.content === "string") contextChars += entry.content.length
+    if (typeof entry?.content === "string" && entry.content) {
+      contextChars += entry.content.length
+      contextWithText += 1
+    }
   }
+
+  const contextMatched =
+    typeof body.localAIContext?.coverage?.matched === "number"
+      ? body.localAIContext.coverage.matched
+      : contextEntries
 
   const selection = (Array.isArray(body.localAIContext?.blocks) ? body.localAIContext.blocks : [])
     .map((block) => `${block.type}:${String(block.value ?? "").slice(0, 24)}`)
@@ -350,7 +398,8 @@ const handleChat = async (req, res, body) => {
 
   console.log(
     `[gateway] chat: model=${modelFor(body.model)} messages=${messages.length} ` +
-      `context=${contextBlocks} block(s)/${contextEntries} entrie(s)/${contextFeeds} feed(s)/${contextChars} chars${
+      `context=${contextBlocks} block(s)/${contextEntries} entrie(s)(${contextWithText} with text)/` +
+      `${contextMatched} matched/${contextFeeds} feed(s)/${contextChars} chars${
         selection ? ` [${selection}]` : ""
       }`,
   )
