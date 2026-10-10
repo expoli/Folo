@@ -1,4 +1,4 @@
-import type { LocalAIMode } from "./local-ai"
+import type { LocalAIMode, LocalAIReasoningEffort } from "./local-ai"
 
 export interface GeneralSettings {
   appLaunchOnStartup: boolean
@@ -226,6 +226,21 @@ export interface LocalAIGatewaySettings {
   directModel: string
   /** Models offered in the direct model picker. */
   directModels: string[]
+  /** Tuning of the direct endpoint; every field empty means the built-in default. */
+  directOptions: LocalAIDirectOptions
+}
+
+/** Knobs of a direct endpoint, so a self-hosted model can be tuned without a rebuild. */
+export interface LocalAIDirectOptions {
+  maxOutputTokens: number | null
+  temperature: number | null
+  /** How hard the model thinks before answering; `null` leaves the provider default. */
+  reasoningEffort: LocalAIReasoningEffort | null
+  /** JSON merged into every request body, for provider-specific knobs (`thinking_budget`, …). */
+  extraRequestBody: string
+  summaryChunkChars: number | null
+  translationChunkChars: number | null
+  translationConcurrency: number | null
 }
 
 export interface AISettings {

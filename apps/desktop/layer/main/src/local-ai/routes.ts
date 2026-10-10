@@ -7,6 +7,7 @@ import {
   availableModelIds,
   createDirectModel,
   DIRECT_CONTEXT_BUDGET,
+  directCallOptions,
   resolveModelId,
 } from "./provider"
 import { handleSummaryRequest } from "./summary"
@@ -173,6 +174,8 @@ export const routeLocalAIRequest = async (input: LocalAIRouteInput): Promise<Res
   const { pathname } = new URL(input.path, LOCAL_AI_DIRECT_ORIGIN)
   const method = input.method.toUpperCase()
   const { config, apiKey } = input
+  // The settings travel with every request, so a change applies to the next call without a restart.
+  const call = directCallOptions(config)
 
   if (method === "GET" && pathname === "/health") {
     return handleHealth(config, apiKey, probeRequested(input.path))
@@ -195,6 +198,7 @@ export const routeLocalAIRequest = async (input: LocalAIRouteInput): Promise<Res
       return await handleSummaryRequest({
         body: parseJsonBody(input.body),
         model: createDirectModel({ config, apiKey }),
+        call,
       })
     }
 
@@ -202,6 +206,7 @@ export const routeLocalAIRequest = async (input: LocalAIRouteInput): Promise<Res
       return await handleSummaryTitleRequest({
         body: parseJsonBody(input.body),
         model: createDirectModel({ config, apiKey }),
+        call,
       })
     }
 
@@ -209,6 +214,7 @@ export const routeLocalAIRequest = async (input: LocalAIRouteInput): Promise<Res
       return await handleTranslationBatchRequest({
         body: parseJsonBody(input.body),
         model: createDirectModel({ config, apiKey }),
+        call,
       })
     }
   } catch (error) {

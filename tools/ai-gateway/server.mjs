@@ -82,7 +82,7 @@ const config = {
   temperature: process.env.AI_TEMPERATURE ? Number(process.env.AI_TEMPERATURE) : undefined,
   maxOutputTokens: process.env.AI_MAX_OUTPUT_TOKENS
     ? Number(process.env.AI_MAX_OUTPUT_TOKENS)
-    : 2048,
+    : 8192,
   translationConcurrency: Number(process.env.AI_TRANSLATION_CONCURRENCY || 3),
   // Content longer than these limits is summarized / translated in several calls instead of
   // being cut to fit one request (see `splitIntoChunks`).
@@ -380,6 +380,14 @@ const handleChat = async (req, res, body) => {
     messages,
     temperature: config.temperature,
     maxOutputTokens: config.maxOutputTokens,
+    // Reasoning models answer only after thinking; this line tells a spent budget apart from an
+    // upstream that answers in `reasoning_content` alone.
+    onFinish: ({ finishReason, usage }) => {
+      console.log(
+        `[gateway] chat done: finish=${finishReason ?? "?"} output=${usage?.outputTokens ?? "?"} ` +
+          `reasoning=${usage?.reasoningTokens ?? "?"}`,
+      )
+    },
   })
 
   const response = result.toUIMessageStreamResponse({
@@ -531,7 +539,7 @@ const handleSummaryTitle = async (req, res, body) => {
     return
   }
 
-  const { text } = await generateText({
+  const { text, reasoning, finishReason, usage } = await generateText({
     model: resolveModel(modelFor(body.model)),
     system: [
       config.titleSystemPrompt,
@@ -541,11 +549,19 @@ const handleSummaryTitle = async (req, res, body) => {
       .join(" "),
     prompt: transcript,
     temperature: config.temperature,
-    maxOutputTokens: 32,
+    maxOutputTokens: 512,
   })
 
   const title = cleanTitle(text)
-  console.log(`[gateway] title: ${title ? JSON.stringify(title) : "(empty reply)"}`)
+  console.log(
+    `[gateway] title: ${title ? JSON.stringify(title) : "(empty reply)"}${
+      title
+        ? ""
+        : ` finish=${finishReason ?? "?"} output=${usage?.outputTokens ?? "?"} reasoning=${
+            usage?.reasoningTokens ?? "?"
+          } reasoningText=${reasoning?.length ?? 0}`
+    }`,
+  )
 
   sendJson(res, 200, { title })
 }

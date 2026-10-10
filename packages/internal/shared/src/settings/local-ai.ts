@@ -25,6 +25,9 @@ export type LocalAIChatStreamEvent =
   | { streamId: string; error: string }
 
 /** OpenAI-compatible endpoint the main process calls in `direct` mode. */
+/** Standard OpenAI-compatible thinking budget levels. */
+export type LocalAIReasoningEffort = "low" | "medium" | "high"
+
 export interface LocalAIDirectConfig {
   /** Endpoint root including the version segment, e.g. `https://api.openai.com/v1`. */
   baseUrl: string
@@ -32,6 +35,21 @@ export interface LocalAIDirectConfig {
   model: string
   /** Models offered in the picker; empty falls back to `model`. */
   models: string[]
+
+  // Tuning of the endpoint, all optional: absent means the built-in default.
+
+  /** Output cap of one call; reasoning models spend part of it on thinking. */
+  maxOutputTokens?: number | null
+  temperature?: number | null
+  /** Forwarded as `reasoning_effort`, the standard knob for how hard a model thinks. */
+  reasoningEffort?: LocalAIReasoningEffort | null
+  /** Extra JSON merged into every request body, for provider-specific knobs. */
+  extraRequestBody?: string | null
+  /** Long articles are summarized/translated in chunks of this size. */
+  summaryChunkChars?: number | null
+  translationChunkChars?: number | null
+  /** Entries translated at the same time. */
+  translationConcurrency?: number | null
 }
 
 /** Reply of the `request` IPC method: a complete HTTP response, body as text. */

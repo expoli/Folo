@@ -338,6 +338,36 @@ describe("routeLocalAIRequest", () => {
     expect(system?.content).toContain("Entry body")
   })
 
+  test("applies the tuning of the direct endpoint", async () => {
+    const calls = stubUpstream(() => sseStream("ok"))
+
+    const response = await route({
+      path: "/ai/chat",
+      config: {
+        ...config,
+        maxOutputTokens: 1234,
+        temperature: 0.25,
+        reasoningEffort: "high",
+        extraRequestBody: '{"thinking_budget":1024}',
+      },
+      body: JSON.stringify({
+        messages: [{ role: "user", parts: [{ type: "text", text: "Hi" }] }],
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    await response.text()
+
+    // The knobs of the settings reach the endpoint: the provider's own options, and the extra
+    // JSON the user added for a knob the OpenAI-compatible schema does not know.
+    expect(calls[0]!.body).toMatchObject({
+      max_tokens: 1234,
+      temperature: 0.25,
+      reasoning_effort: "high",
+      thinking_budget: 1024,
+    })
+  })
+
   test("tells the model which language to answer in", async () => {
     const calls = stubUpstream(() => sseStream("你好"))
 

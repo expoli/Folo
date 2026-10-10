@@ -3,12 +3,17 @@ import { generateText } from "ai"
 
 import { jsonResponse } from "./http"
 import { DEFAULT_TITLE_SYSTEM_PROMPT, languageName } from "./prompts"
+import type { DirectCallOptions } from "./provider"
 
 /**
  * `POST /ai/summary-title`: Folo's server writes a short title for a chat; with a local model the
  * main process asks the same model instead, so the "generate title" action needs no Folo API.
  */
-export const TITLE_MAX_OUTPUT_TOKENS = 32
+/**
+ * Budget of a title call. Reasoning models count their thinking against it, and a cap they use up
+ * leaves no title at all, so this is generous for a six-word answer.
+ */
+export const TITLE_MAX_OUTPUT_TOKENS = 512
 
 /** Model replies quote and punctuate titles; the UI shows whatever comes back verbatim. */
 export const cleanTitle = (text: unknown) => {
@@ -25,6 +30,7 @@ export const cleanTitle = (text: unknown) => {
 export const handleSummaryTitleRequest = async (params: {
   body: Record<string, unknown>
   model: LanguageModel
+  call?: DirectCallOptions
 }) => {
   const messages = Array.isArray(params.body.messages) ? params.body.messages : []
   const language = typeof params.body.language === "string" ? params.body.language : null
@@ -44,7 +50,7 @@ export const handleSummaryTitleRequest = async (params: {
     return jsonResponse(400, { error: "Field `messages` is required" })
   }
 
-  const { text } = await generateText({
+  const { text, reasoning, finishReason, usage } = await generateText({
     model: params.model,
     system: [
       DEFAULT_TITLE_SYSTEM_PROMPT,
@@ -53,12 +59,27 @@ export const handleSummaryTitleRequest = async (params: {
       .filter(Boolean)
       .join(" "),
     prompt: transcript,
-    maxOutputTokens: TITLE_MAX_OUTPUT_TOKENS,
+    // The configured cap may lower this one, but never raise it: a short answer needs no more.
+    maxOutputTokens: Math.min(
+      params.call?.maxOutputTokens ?? TITLE_MAX_OUTPUT_TOKENS,
+      TITLE_MAX_OUTPUT_TOKENS,
+    ),
+    temperature: params.call?.temperature,
+    providerOptions: params.call?.providerOptions,
   })
 
   const title = cleanTitle(text)
-  // The UI reports a failure when no title comes back, so the log says which case it was.
-  console.log(`[local-ai] title: ${title ? JSON.stringify(title) : "(empty reply)"}`)
+  // The UI reports a failure when no title comes back, so the log says which case it was: a model
+  // that spent its budget thinking, a provider that answers in `reasoning` only, or nothing at all.
+  console.log(
+    `[local-ai] title: ${title ? JSON.stringify(title) : "(empty reply)"}${
+      title
+        ? ""
+        : ` finish=${finishReason ?? "?"} output=${usage?.outputTokens ?? "?"} reasoning=${
+            usage?.outputTokenDetails?.reasoningTokens ?? "?"
+          } reasoningText=${reasoning?.length ?? 0}`
+    }`,
+  )
 
   return jsonResponse(200, { title })
 }

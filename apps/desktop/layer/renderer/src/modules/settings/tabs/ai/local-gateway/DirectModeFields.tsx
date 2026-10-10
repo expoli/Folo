@@ -18,6 +18,8 @@ import { toast } from "sonner"
 import { ipcServices } from "~/lib/client"
 import { importLocalAIConfigFromByok } from "~/lib/local-ai-gateway"
 
+import { DirectAdvancedFields } from "./DirectAdvancedFields"
+
 interface DirectModeFieldsProps {
   settings: LocalAIGatewaySettings
   /** Persists the fields the user finished editing. */
@@ -270,6 +272,8 @@ export const DirectModeFields = ({
           {t("settings.localGateway.direct.apiKey.description")}
         </p>
       </div>
+
+      <DirectAdvancedFields settings={settings} save={save} />
 
       <div className="space-y-2">
         <div className="flex items-center justify-between gap-2">

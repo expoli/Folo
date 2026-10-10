@@ -295,6 +295,59 @@ describe("direct mode wiring", () => {
       baseUrl: "https://api.example.com/v1",
       model: "model-a",
       models: ["model-a", "model-b"],
+      // Nothing tuned yet: every knob stays with the built-in default in the main process.
+      maxOutputTokens: null,
+      temperature: null,
+      reasoningEffort: null,
+      extraRequestBody: null,
+      summaryChunkChars: null,
+      translationChunkChars: null,
+      translationConcurrency: null,
+    })
+  })
+
+  test("carries the advanced knobs with the request", () => {
+    setAISetting(
+      "localGateway",
+      directSettings({
+        directOptions: {
+          maxOutputTokens: 4096,
+          temperature: 0.2,
+          reasoningEffort: "high",
+          extraRequestBody: '{"thinking_budget":1024}',
+          summaryChunkChars: 6000,
+          translationChunkChars: 4000,
+          translationConcurrency: 2,
+        },
+      }),
+    )
+    applyLocalAIGatewaySettings()
+
+    expect(getDirectAIConfig()).toMatchObject({
+      maxOutputTokens: 4096,
+      temperature: 0.2,
+      reasoningEffort: "high",
+      extraRequestBody: '{"thinking_budget":1024}',
+      summaryChunkChars: 6000,
+      translationChunkChars: 4000,
+      translationConcurrency: 2,
+    })
+  })
+
+  test("fills the knobs of settings stored before they existed", () => {
+    jotaiStore.set(__aiSettingAtom, {
+      ...getAISettings(),
+      localGateway: {
+        enabled: true,
+        mode: "direct",
+        directBaseUrl: "https://api.example.com/v1",
+      } as unknown as LocalAIGatewaySettings,
+    } as WebAISettings)
+
+    expect(getDirectAIConfig()).toMatchObject({
+      maxOutputTokens: null,
+      reasoningEffort: null,
+      translationConcurrency: null,
     })
   })
 
@@ -389,11 +442,11 @@ describe("direct mode wiring", () => {
     expect(values).toContainEqual({ type: "text-delta", id: "0", delta: "Hi" })
     expect(ipcServicesMock.localAI.openChatStream).toHaveBeenCalledWith({
       body: expect.stringContaining('"messages"'),
-      config: {
+      config: expect.objectContaining({
         baseUrl: "https://api.example.com/v1",
         model: "model-a",
         models: ["model-a", "model-b"],
-      },
+      }),
     })
   })
 

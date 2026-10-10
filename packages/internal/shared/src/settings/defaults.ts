@@ -188,6 +188,15 @@ export const defaultAISettings: AISettings = {
     directBaseUrl: "",
     directModel: "",
     directModels: [],
+    directOptions: {
+      maxOutputTokens: null,
+      temperature: null,
+      reasoningEffort: null,
+      extraRequestBody: "",
+      summaryChunkChars: null,
+      translationChunkChars: null,
+      translationConcurrency: null,
+    },
   },
 }
 

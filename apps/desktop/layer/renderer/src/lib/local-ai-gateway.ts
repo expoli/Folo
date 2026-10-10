@@ -51,7 +51,14 @@ export const normalizeLocalGatewaySettings = (
   const cached = normalizedSettingsCache.get(stored)
   if (cached) return cached
 
-  const normalized = { ...createDefaultSettings().localGateway, ...stored }
+  const defaults = createDefaultSettings().localGateway
+  const normalized: LocalAIGatewaySettings = {
+    ...defaults,
+    ...stored,
+    // A stored object may carry a partial `directOptions` as well, since the settings atom merges
+    // shallowly.
+    directOptions: { ...defaults.directOptions, ...stored.directOptions },
+  }
   normalizedSettingsCache.set(stored, normalized)
 
   return normalized
@@ -70,8 +77,21 @@ export const getDirectAIConfig = (
   if (!baseUrl) return null
 
   const models = (settings.directModels ?? []).filter((model) => model.trim())
+  const options = settings.directOptions ?? createDefaultSettings().localGateway.directOptions
 
-  return { baseUrl, model: settings.directModel?.trim() || models[0] || "", models }
+  return {
+    baseUrl,
+    model: settings.directModel?.trim() || models[0] || "",
+    models,
+    // Every knob is optional: what the user left empty keeps the built-in default.
+    maxOutputTokens: options.maxOutputTokens,
+    temperature: options.temperature,
+    reasoningEffort: options.reasoningEffort,
+    extraRequestBody: options.extraRequestBody?.trim() || null,
+    summaryChunkChars: options.summaryChunkChars,
+    translationChunkChars: options.translationChunkChars,
+    translationConcurrency: options.translationConcurrency,
+  }
 }
 
 /** One transport for the lifetime of the window: it reads the settings on every request. */

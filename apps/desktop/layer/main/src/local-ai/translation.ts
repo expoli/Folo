@@ -4,6 +4,7 @@ import { generateText } from "ai"
 import { splitIntoChunks } from "./chunking"
 import { jsonResponse } from "./http"
 import { DEFAULT_TRANSLATION_SYSTEM_PROMPT, languageName } from "./prompts"
+import type { DirectCallOptions } from "./provider"
 import { MAX_OUTPUT_TOKENS } from "./provider"
 
 /** A field longer than this is translated chunk by chunk, like `AI_TRANSLATION_CHUNK_CHARS`. */
@@ -52,6 +53,7 @@ export const translateShortFields = async (
   entry: Record<string, unknown>,
   fields: string[],
   language?: string | null,
+  call?: DirectCallOptions,
 ): Promise<TranslatedEntryData | null> => {
   const parts: string[] = []
   for (const field of fields) {
@@ -73,7 +75,9 @@ export const translateShortFields = async (
       "",
       parts.join("\n\n"),
     ].join("\n"),
-    maxOutputTokens: MAX_OUTPUT_TOKENS,
+    maxOutputTokens: call?.maxOutputTokens ?? MAX_OUTPUT_TOKENS,
+    temperature: call?.temperature,
+    providerOptions: call?.providerOptions,
   })
 
   const parsed = parseJsonLoose(text)
@@ -99,8 +103,9 @@ export const translateLongField = async (
   field: string,
   value: string,
   language?: string | null,
+  call?: DirectCallOptions,
 ): Promise<string | null> => {
-  const chunks = splitIntoChunks(value, TRANSLATION_CHUNK_CHARS)
+  const chunks = splitIntoChunks(value, call?.translationChunkChars ?? TRANSLATION_CHUNK_CHARS)
   const translated: string[] = []
 
   for (const [index, chunk] of chunks.entries()) {
@@ -114,7 +119,9 @@ export const translateLongField = async (
         "",
         chunk,
       ].join("\n"),
-      maxOutputTokens: MAX_OUTPUT_TOKENS,
+      maxOutputTokens: call?.maxOutputTokens ?? MAX_OUTPUT_TOKENS,
+      temperature: call?.temperature,
+      providerOptions: call?.providerOptions,
     })
 
     if (typeof text === "string" && text.trim()) {
@@ -133,6 +140,7 @@ export const translateEntry = async (
   entry: Record<string, unknown>,
   fields: string[],
   language?: string | null,
+  call?: DirectCallOptions,
 ): Promise<TranslatedEntryData | null> => {
   const shortFields: string[] = []
   const longFields: string[] = []
@@ -141,7 +149,7 @@ export const translateEntry = async (
     const value = entry[field]
     if (typeof value !== "string" || !value.trim()) continue
 
-    if (value.length > TRANSLATION_CHUNK_CHARS) {
+    if (value.length > (call?.translationChunkChars ?? TRANSLATION_CHUNK_CHARS)) {
       longFields.push(field)
     } else {
       shortFields.push(field)
@@ -151,11 +159,20 @@ export const translateEntry = async (
   const data: TranslatedEntryData = {}
 
   if (shortFields.length > 0) {
-    Object.assign(data, (await translateShortFields(model, entry, shortFields, language)) ?? {})
+    Object.assign(
+      data,
+      (await translateShortFields(model, entry, shortFields, language, call)) ?? {},
+    )
   }
 
   for (const field of longFields) {
-    const translated = await translateLongField(model, field, entry[field] as string, language)
+    const translated = await translateLongField(
+      model,
+      field,
+      entry[field] as string,
+      language,
+      call,
+    )
     if (translated) data[field] = translated
   }
 
@@ -171,8 +188,9 @@ const TRANSLATABLE_FIELDS = ["title", "description", "content", "readabilityCont
 export const handleTranslationBatchRequest = async (params: {
   body: Record<string, unknown>
   model: LanguageModel
+  call?: DirectCallOptions
 }): Promise<Response> => {
-  const { body, model } = params
+  const { body, model, call } = params
   const entries = Array.isArray(body.entries)
     ? (body.entries as Record<string, unknown>[]).filter(
         (entry) => entry && typeof entry === "object",
@@ -195,7 +213,7 @@ export const handleTranslationBatchRequest = async (params: {
       if (!entry) return
 
       try {
-        const data = await translateEntry(model, entry, fields, language)
+        const data = await translateEntry(model, entry, fields, language, call)
         if (data) {
           lines.push(`${JSON.stringify({ id: String(entry.id), data })}\n`)
         }
@@ -206,8 +224,14 @@ export const handleTranslationBatchRequest = async (params: {
   }
 
   await Promise.all(
-    Array.from({ length: Math.max(1, Math.min(TRANSLATION_CONCURRENCY, entries.length)) }, () =>
-      worker(),
+    Array.from(
+      {
+        length: Math.max(
+          1,
+          Math.min(call?.translationConcurrency ?? TRANSLATION_CONCURRENCY, entries.length),
+        ),
+      },
+      () => worker(),
     ),
   )
 

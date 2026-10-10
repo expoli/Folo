@@ -4,6 +4,7 @@ import { generateText } from "ai"
 import { splitIntoChunks } from "./chunking"
 import { jsonResponse } from "./http"
 import { DEFAULT_SUMMARY_SYSTEM_PROMPT, languageName } from "./prompts"
+import type { DirectCallOptions } from "./provider"
 import { MAX_OUTPUT_TOKENS } from "./provider"
 
 /** Texts longer than this are summarized chunk by chunk, like `AI_SUMMARY_CHUNK_CHARS` does. */
@@ -14,10 +15,12 @@ interface SummarizeChunkOptions {
   title?: string | null
   content: string
   part?: { index: number; total: number }
+  /** Knobs of this request; absent keeps the built-in defaults. */
+  call?: DirectCallOptions
 }
 
 const summarizeChunk = async (model: LanguageModel, options: SummarizeChunkOptions) => {
-  const { language, title, content, part } = options
+  const { language, title, content, part, call } = options
   const { text } = await generateText({
     model,
     system: DEFAULT_SUMMARY_SYSTEM_PROMPT,
@@ -32,7 +35,9 @@ const summarizeChunk = async (model: LanguageModel, options: SummarizeChunkOptio
     ]
       .filter(Boolean)
       .join("\n"),
-    maxOutputTokens: MAX_OUTPUT_TOKENS,
+    maxOutputTokens: call?.maxOutputTokens ?? MAX_OUTPUT_TOKENS,
+    temperature: call?.temperature,
+    providerOptions: call?.providerOptions,
   })
 
   return typeof text === "string" ? text.trim() : ""
@@ -42,6 +47,7 @@ const mergeSummaryChunks = async (
   model: LanguageModel,
   language: string | null | undefined,
   partials: string[],
+  call?: DirectCallOptions,
 ) => {
   const { text } = await generateText({
     model,
@@ -52,7 +58,9 @@ const mergeSummaryChunks = async (
       "",
       partials.map((partial, index) => `## Part ${index + 1}\n${partial}`).join("\n\n"),
     ].join("\n"),
-    maxOutputTokens: MAX_OUTPUT_TOKENS,
+    maxOutputTokens: call?.maxOutputTokens ?? MAX_OUTPUT_TOKENS,
+    temperature: call?.temperature,
+    providerOptions: call?.providerOptions,
   })
 
   return typeof text === "string" ? text.trim() : ""
@@ -64,12 +72,13 @@ export const summarizeContent = async (params: {
   language?: string | null
   title?: string | null
   content: string
+  call?: DirectCallOptions
 }): Promise<string | null> => {
-  const { model, language, title, content } = params
-  const chunks = splitIntoChunks(content, SUMMARY_CHUNK_CHARS)
+  const { model, language, title, content, call } = params
+  const chunks = splitIntoChunks(content, call?.summaryChunkChars ?? SUMMARY_CHUNK_CHARS)
 
   if (chunks.length === 1) {
-    return (await summarizeChunk(model, { language, title, content: chunks[0]! })) || null
+    return (await summarizeChunk(model, { language, title, content: chunks[0]!, call })) || null
   }
 
   const partials: string[] = []
@@ -79,13 +88,14 @@ export const summarizeContent = async (params: {
       title,
       content: chunk,
       part: { index: index + 1, total: chunks.length },
+      call,
     })
     if (summary) partials.push(summary)
   }
 
   if (partials.length === 0) return null
 
-  const merged = await mergeSummaryChunks(model, language, partials)
+  const merged = await mergeSummaryChunks(model, language, partials, call)
   // Report the parts that survived, so a failed chunk cannot read as full coverage.
   const coverage = `_Summarized the full article in ${partials.length} of ${chunks.length} parts (${content.length} characters)._`
 
@@ -97,8 +107,9 @@ export const summarizeContent = async (params: {
 export const handleSummaryRequest = async (params: {
   body: Record<string, unknown>
   model: LanguageModel
+  call?: DirectCallOptions
 }): Promise<Response> => {
-  const { body, model } = params
+  const { body, model, call } = params
   const content = typeof body.content === "string" ? body.content.trim() : ""
   if (!content) {
     return jsonResponse(400, { error: "Field `content` is required" })
@@ -109,6 +120,7 @@ export const handleSummaryRequest = async (params: {
     language: typeof body.language === "string" ? body.language : null,
     title: typeof body.title === "string" ? body.title : null,
     content,
+    call,
   })
 
   return jsonResponse(200, { code: 0, data })

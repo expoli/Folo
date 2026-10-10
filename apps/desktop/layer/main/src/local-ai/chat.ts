@@ -10,7 +10,7 @@ import {
 } from "./context"
 import { jsonResponse } from "./http"
 import { DEFAULT_CHAT_SYSTEM_PROMPT } from "./prompts"
-import { createDirectModel, MAX_OUTPUT_TOKENS } from "./provider"
+import { createDirectModel, directCallOptions } from "./provider"
 
 interface ChatRequestBody {
   messages?: unknown
@@ -39,6 +39,7 @@ export const createChatStreamResponse = (params: {
   const localContext = formatLocalContext(body.localAIContext)
   const stats = describeChatContext(body.localAIContext)
   const requestedModel = typeof body.model === "string" ? body.model : null
+  const call = directCallOptions(config)
 
   console.log(
     `[local-ai] chat: model=${requestedModel ?? config.model} messages=${messages.length} ` +
@@ -68,8 +69,18 @@ export const createChatStreamResponse = (params: {
       typeof body.language === "string" ? body.language : null,
     ),
     messages,
-    maxOutputTokens: MAX_OUTPUT_TOKENS,
+    maxOutputTokens: call.maxOutputTokens,
+    temperature: call.temperature,
+    providerOptions: call.providerOptions,
     abortSignal,
+    // Reasoning models answer only after thinking, and a cap their thinking uses up leaves an empty
+    // reply; this line says which of the two happened.
+    onFinish: ({ finishReason, usage }) => {
+      console.log(
+        `[local-ai] chat done: finish=${finishReason ?? "?"} output=${usage?.outputTokens ?? "?"} ` +
+          `reasoning=${usage?.outputTokenDetails?.reasoningTokens ?? "?"}`,
+      )
+    },
   })
 
   return result.toUIMessageStreamResponse({
