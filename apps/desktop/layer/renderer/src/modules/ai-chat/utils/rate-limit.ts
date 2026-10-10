@@ -1,3 +1,4 @@
+import { isLocalAIEnabled } from "@follow/store/ai-local/config"
 import type { FreeQuota, TokenUsage } from "@follow-app/client-sdk"
 
 import { getI18n } from "~/i18n"
@@ -62,6 +63,10 @@ export function computeIsRateLimited(
   error: Error | string | undefined,
   conf?: AIConfigLike | null,
 ): boolean {
+  // A local endpoint has no Folo quota, so nothing of the kind gates the input; a request the
+  // endpoint refuses reports itself in the chat.
+  if (isLocalAIEnabled()) return false
+
   if (error) {
     const parsed = parseAIError(error)
     if (parsed.isRateLimitError) return true
@@ -85,6 +90,11 @@ export function computeRateLimitMessage(
   const i18n = getI18n()
   const { t } = i18n
   const hideResetDetails = options?.hideResetDetails ?? false
+
+  // The usage Folo reports describes its own paid API, which a local endpoint does not touch: a
+  // self-hosted gateway answers with an empty quota, and reading that as "depleted" would warn
+  // about something that cannot happen.
+  if (isLocalAIEnabled()) return null
 
   const aiNs = { ns: "ai" } as const
   if (error) {

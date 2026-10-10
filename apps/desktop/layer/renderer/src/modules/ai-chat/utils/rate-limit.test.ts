@@ -1,6 +1,7 @@
+import { configureLocalAI, resetLocalAI } from "@follow/store/ai-local/config"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { computeRateLimitMessage } from "./rate-limit"
+import { computeIsRateLimited, computeRateLimitMessage } from "./rate-limit"
 
 vi.mock("~/i18n", () => ({
   getI18n: () => ({
@@ -74,5 +75,33 @@ describe("computeRateLimitMessage", () => {
     })
 
     expect(message).toBe("AI credits depleted · resets at 12 Apr, 20:45")
+  })
+})
+
+describe("computeRateLimitMessage with local AI", () => {
+  /** What a self-hosted gateway answers with: it has no Folo quota to report. */
+  const emptyQuota = {
+    usage: { total: 0, used: 0, remaining: 0, resetAt: new Date(0) },
+  }
+
+  beforeEach(() => {
+    configureLocalAI({ baseUrl: "http://127.0.0.1:18788" })
+  })
+
+  afterEach(() => {
+    resetLocalAI()
+  })
+
+  it("says nothing about a quota the endpoint does not have", () => {
+    expect(computeRateLimitMessage(undefined, emptyQuota)).toBeNull()
+    expect(computeIsRateLimited(undefined, emptyQuota)).toBe(false)
+  })
+
+  it("keeps Folo's credits notice out of a local chat", () => {
+    // The code Folo uses for "rate limit exceeded"; a local endpoint never sends it.
+    const error = new Error(JSON.stringify({ code: 15_000, remainedTokens: 0 }))
+
+    expect(computeRateLimitMessage(error, emptyQuota)).toBeNull()
+    expect(computeIsRateLimited(error, emptyQuota)).toBe(false)
   })
 })

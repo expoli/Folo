@@ -2,6 +2,7 @@ import { Label } from "@follow/components/ui/label/index.js"
 import { useTranslation } from "react-i18next"
 
 import { setAISetting, useAISettingValue } from "~/atoms/settings/ai"
+import { useLocalAIConfig } from "~/lib/local-ai-gateway"
 
 import { createDefineSettingItem } from "../helper/builder"
 import { createSettingBuilder } from "../helper/setting-builder"
@@ -25,6 +26,8 @@ export const AI_SETTING_SECTION_IDS = {
 
 export const SettingAI = () => {
   const { t } = useTranslation("ai")
+  const { baseUrl } = useLocalAIConfig()
+  const useLocalAI = baseUrl !== null
 
   return (
     <div className="mt-4">
@@ -85,11 +88,11 @@ export const SettingAI = () => {
           },
           LocalGatewaySection,
 
-          {
-            type: "title",
-            value: t("usage_analysis.title"),
-          },
-          UsageAnalysisSection,
+          // Folo's token usage and quota say nothing about a local endpoint, so the panel that
+          // reports them stays away while local AI is on.
+          ...(useLocalAI
+            ? []
+            : [{ type: "title" as const, value: t("usage_analysis.title") }, UsageAnalysisSection]),
           AISecurityDisclosureSection,
         ]}
       />
