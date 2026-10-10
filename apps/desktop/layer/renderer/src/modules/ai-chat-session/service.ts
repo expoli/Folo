@@ -1,3 +1,4 @@
+import { isLocalAIEnabled } from "@follow/store/ai-local/config"
 import type { AIChatMessage, AIChatSession, ListSessionsQuery } from "@follow-app/client-sdk"
 import type { UIMessagePart } from "ai"
 
@@ -29,6 +30,13 @@ class AIChatSessionServiceStatic {
    * Returns the list of sessions.
    */
   async syncSessionsAndMessagesFromServer(filters?: ListSessionsQuery): Promise<AIChatSession[]> {
+    // A self-hosted gateway keeps every session in the local database: there is no server-side
+    // history to fetch, and asking Folo for it would return sessions this build never created.
+    if (isLocalAIEnabled()) {
+      await this.loadSessionsFromDb()
+      return []
+    }
+
     if (this.sync) {
       return []
     }

@@ -9,10 +9,12 @@
  * Implemented endpoints:
  *   POST /ai/chat                 AI SDK UI message stream (chat)
  *   GET  /ai/chat/:id/stream      stream resumption — always 204, no server-side history
- *   GET  /ai/chat/config          model list + empty quota, feeds the model picker
- *   POST /ai/summary              entry summary (entry text travels in the request)
- *   POST /ai/translation/batch    NDJSON stream of `{ id, data }`
- *   GET  /health                  liveness probe
+ *   GET  /ai/chat/config          model list + empty quota + chat context budget
+ *   POST /ai/summary              entry summary (entry text travels in the request; long
+ *                                 content is summarized in chunks and merged)
+ *   POST /ai/translation/batch    NDJSON stream of `{ id, data }`; long fields are translated
+ *                                 chunk by chunk and rejoined per field
+ *   GET  /health                  liveness probe (`?probe=1` also calls the model once)
  *
  * Not implemented (still served by Folo's own API, because they need its closed-source
  * backend): text-to-speech, AI tasks / daily digests, MCP services, AI chat memory,
@@ -57,6 +59,17 @@ const config = {
     ? Number(process.env.AI_MAX_OUTPUT_TOKENS)
     : 2048,
   translationConcurrency: Number(process.env.AI_TRANSLATION_CONCURRENCY || 3),
+  // Content longer than these limits is summarized / translated in several calls instead of
+  // being cut to fit one request (see `splitIntoChunks`).
+  summaryChunkChars: positiveInt(process.env.AI_SUMMARY_CHUNK_CHARS, 12000),
+  translationChunkChars: positiveInt(process.env.AI_TRANSLATION_CHUNK_CHARS, 8000),
+  // How much article text the client may attach to a chat request; announced via
+  // `GET /ai/chat/config` and consumed by `buildLocalAIContext`.
+  context: {
+    maxEntries: positiveInt(process.env.AI_CONTEXT_MAX_ENTRIES, 20),
+    maxCharsPerEntry: positiveInt(process.env.AI_CONTEXT_MAX_CHARS_PER_ENTRY, 20000),
+    maxTotalChars: positiveInt(process.env.AI_CONTEXT_MAX_TOTAL_CHARS, 60000),
+  },
   chatSystemPrompt: process.env.AI_CHAT_SYSTEM_PROMPT || DEFAULT_CHAT_SYSTEM_PROMPT,
   summarySystemPrompt: process.env.AI_SUMMARY_SYSTEM_PROMPT || DEFAULT_SUMMARY_SYSTEM_PROMPT,
   translationSystemPrompt:
@@ -100,6 +113,11 @@ function parseHeaders(raw) {
     console.warn("[gateway] AI_HEADERS is not valid JSON, ignoring it")
     return undefined
   }
+}
+
+function positiveInt(raw, fallback) {
+  const value = Number(raw)
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback
 }
 
 const LANGUAGE_NAMES = {
@@ -304,19 +322,43 @@ const handleChat = async (req, res, body) => {
   res.end()
 }
 
-const handleSummary = async (req, res, body) => {
-  const content = typeof body.content === "string" ? body.content.trim() : ""
-  if (!content) {
-    sendJson(res, 400, { error: "Field `content` is required" })
-    return
+/** Splits long text at paragraph boundaries, falling back to hard cuts for huge paragraphs. */
+const splitIntoChunks = (text, maxChars) => {
+  const chunks = []
+  let current = ""
+
+  const flush = () => {
+    if (current.trim()) chunks.push(current.trim())
+    current = ""
   }
 
+  for (const block of text.split(/\n{2,}/)) {
+    if (block.length > maxChars) {
+      flush()
+      for (let index = 0; index < block.length; index += maxChars) {
+        chunks.push(block.slice(index, index + maxChars))
+      }
+      continue
+    }
+
+    if (current && current.length + block.length + 2 > maxChars) flush()
+    current = current ? `${current}\n\n${block}` : block
+  }
+  flush()
+
+  return chunks.length > 0 ? chunks : [text]
+}
+
+const summarizeChunk = async (model, { language, title, content, part }) => {
   const { text } = await generateText({
-    model: resolveModel(modelFor(body.model)),
+    model,
     system: config.summarySystemPrompt,
     prompt: [
-      `Write the summary in ${languageName(body.language)}.`,
-      body.title ? `Title: ${body.title}` : "",
+      `Write the summary in ${languageName(language)}.`,
+      part
+        ? `This is part ${part.index} of ${part.total} of a long article — summarize this part.`
+        : "",
+      title ? `Title: ${title}` : "",
       "",
       content,
     ]
@@ -326,11 +368,74 @@ const handleSummary = async (req, res, body) => {
     maxOutputTokens: config.maxOutputTokens,
   })
 
-  const data = typeof text === "string" && text.trim() ? text.trim() : null
+  return typeof text === "string" ? text.trim() : ""
+}
+
+const mergeSummaryChunks = async (model, language, partials) => {
+  const { text } = await generateText({
+    model,
+    system: config.summarySystemPrompt,
+    prompt: [
+      `Merge these ${partials.length} partial summaries of one article into a single summary in ${languageName(language)}.`,
+      "Keep every distinct point, remove repetitions, and do not mention the parts or this merging step.",
+      "",
+      partials.map((partial, index) => `## Part ${index + 1}\n${partial}`).join("\n\n"),
+    ].join("\n"),
+    temperature: config.temperature,
+    maxOutputTokens: config.maxOutputTokens,
+  })
+
+  return typeof text === "string" ? text.trim() : ""
+}
+
+const summarizeContent = async ({ model, language, title, content }) => {
+  const chunks = splitIntoChunks(content, config.summaryChunkChars)
+
+  if (chunks.length === 1) {
+    const summary = await summarizeChunk(model, { language, title, content: chunks[0] })
+    return summary || null
+  }
+
+  const partials = []
+  for (const [index, chunk] of chunks.entries()) {
+    const summary = await summarizeChunk(model, {
+      language,
+      title,
+      content: chunk,
+      part: { index: index + 1, total: chunks.length },
+    })
+    if (summary) partials.push(summary)
+  }
+
+  if (partials.length === 0) return null
+
+  const merged = await mergeSummaryChunks(model, language, partials)
+  // Report the parts that survived, so a failed chunk cannot read as full coverage.
+  const coverage = `_Summarized the full article in ${partials.length} of ${chunks.length} parts (${content.length} characters)._`
+
+  // The coverage note stays explicit so a merged summary is never mistaken for a partial one.
+  return merged ? `${merged}\n\n${coverage}` : coverage
+}
+
+const handleSummary = async (req, res, body) => {
+  const content = typeof body.content === "string" ? body.content.trim() : ""
+  if (!content) {
+    sendJson(res, 400, { error: "Field `content` is required" })
+    return
+  }
+
+  const data = await summarizeContent({
+    model: resolveModel(modelFor(body.model)),
+    language: body.language,
+    title: body.title,
+    content,
+  })
+
   sendJson(res, 200, { code: 0, data })
 }
 
-const translateEntry = async (entry, fields, language) => {
+/** One JSON request covering the short fields of an entry, as before chunking existed. */
+const translateShortFields = async (model, entry, fields, language) => {
   const parts = []
   for (const field of fields) {
     const value = entry[field]
@@ -342,7 +447,7 @@ const translateEntry = async (entry, fields, language) => {
   if (parts.length === 0) return null
 
   const { text } = await generateText({
-    model: resolveModel(modelFor(entry.model)),
+    model,
     system: config.translationSystemPrompt,
     prompt: [
       `Translate each section below into ${languageName(language)}.`,
@@ -367,6 +472,67 @@ const translateEntry = async (entry, fields, language) => {
     if (typeof value === "string") {
       data[field] = value.trim()
     }
+  }
+
+  return Object.keys(data).length > 0 ? data : null
+}
+
+/** A field too long for one request is translated paragraph by paragraph and rejoined. */
+const translateLongField = async (model, field, value, language) => {
+  const chunks = splitIntoChunks(value, config.translationChunkChars)
+  const translated = []
+
+  for (const [index, chunk] of chunks.entries()) {
+    const { text } = await generateText({
+      model,
+      system: config.translationSystemPrompt,
+      prompt: [
+        `Translate the text below into ${languageName(language)}.`,
+        `It is part ${index + 1} of ${chunks.length} of the "${field}" field of one article.`,
+        "Reply with the translated text only (keep Markdown, no notes).",
+        "",
+        chunk,
+      ].join("\n"),
+      temperature: config.temperature,
+      maxOutputTokens: config.maxOutputTokens,
+    })
+
+    if (typeof text === "string" && text.trim()) {
+      translated.push(text.trim())
+    } else {
+      // Keep the part visible instead of silently shipping a translation with a hole in it.
+      translated.push(`[…part ${index + 1} of ${chunks.length} left untranslated]`)
+    }
+  }
+
+  return translated.length > 0 ? translated.join("\n\n") : null
+}
+
+const translateEntry = async (entry, fields, language) => {
+  const model = resolveModel(modelFor(entry.model))
+  const shortFields = []
+  const longFields = []
+
+  for (const field of fields) {
+    const value = entry[field]
+    if (typeof value !== "string" || !value.trim()) continue
+
+    if (value.length > config.translationChunkChars) {
+      longFields.push(field)
+    } else {
+      shortFields.push(field)
+    }
+  }
+
+  const data = {}
+
+  if (shortFields.length > 0) {
+    Object.assign(data, (await translateShortFields(model, entry, shortFields, language)) ?? {})
+  }
+
+  for (const field of longFields) {
+    const translated = await translateLongField(model, field, entry[field], language)
+    if (translated) data[field] = translated
   }
 
   return Object.keys(data).length > 0 ? data : null
@@ -424,6 +590,9 @@ const handleConfig = (res) => {
     defaultModel: config.defaultModel,
     availableModels: config.models,
     availableModelsMenu: config.models.map((model) => ({ label: model, value: model })),
+    // How much article text the client may attach to a chat request; the client falls back to
+    // its own conservative defaults when this field is missing (older gateway builds).
+    localAIContext: config.context,
     // A self-hosted gateway has no Folo quota; report empty instead of inventing numbers.
     rateLimit: {
       maxTokens: 0,
@@ -455,6 +624,26 @@ const handleConfig = (res) => {
   })
 }
 
+const probeUpstream = async () => {
+  const startedAt = Date.now()
+
+  try {
+    await generateText({
+      model: resolveModel(config.defaultModel),
+      prompt: "ping",
+      maxOutputTokens: 1,
+    })
+
+    return { ok: true, latencyMs: Date.now() - startedAt }
+  } catch (error) {
+    return {
+      ok: false,
+      latencyMs: Date.now() - startedAt,
+      error: error?.message || "probe failed",
+    }
+  }
+}
+
 const server = createServer(async (req, res) => {
   setCorsHeaders(res)
 
@@ -469,12 +658,21 @@ const server = createServer(async (req, res) => {
 
   try {
     if (pathname === "/health") {
-      sendJson(res, 200, {
+      const payload = {
         ok: true,
         upstream: config.upstream.baseUrl,
         defaultModel: config.defaultModel,
         models: config.models,
-      })
+      }
+
+      // `?probe=1` spends one minimal model call so a client can tell "gateway is up" from
+      // "model/upstream is reachable". Without it the handler stays instant, as before.
+      const probe = url.searchParams.get("probe")
+      if (probe === "1" || probe === "true") {
+        payload.probe = await probeUpstream()
+      }
+
+      sendJson(res, 200, payload)
       return
     }
 

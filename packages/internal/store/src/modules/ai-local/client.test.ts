@@ -5,7 +5,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 
 import { readNdjsonStream } from "../../lib/stream"
 import { fetchLocalAIConfig, requestLocalAISummary, requestLocalAITranslationBatch } from "./client"
-import { configureLocalAI, resetLocalAI } from "./config"
+import {
+  configureLocalAI,
+  DEFAULT_LOCAL_AI_CONTEXT_BUDGET,
+  getLocalAIContextBudget,
+  resetLocalAI,
+} from "./config"
 
 interface RecordedBody {
   content?: string
@@ -38,6 +43,12 @@ beforeAll(async () => {
       body,
     })
 
+    if (req.headers.authorization === "Bearer bad-token") {
+      res.writeHead(401, { "Content-Type": "text/plain" })
+      res.end("Unauthorized")
+      return
+    }
+
     if (req.url === "/ai/summary") {
       res.writeHead(200, { "Content-Type": "application/json" })
       res.end(JSON.stringify({ code: 0, data: `summary of ${body.content}` }))
@@ -58,6 +69,24 @@ beforeAll(async () => {
     if (req.url === "/ai/chat/config") {
       res.writeHead(200, { "Content-Type": "application/json" })
       res.end(JSON.stringify({ defaultModel: "model-a", availableModels: ["model-a", "model-b"] }))
+      return
+    }
+
+    if (req.url === "/broken/ai/summary") {
+      res.writeHead(502, { "Content-Type": "text/plain" })
+      res.end("upstream exploded")
+      return
+    }
+
+    if (req.url === "/budget/ai/chat/config") {
+      res.writeHead(200, { "Content-Type": "application/json" })
+      res.end(
+        JSON.stringify({
+          defaultModel: "model-a",
+          availableModels: ["model-a"],
+          localAIContext: { maxEntries: 5, maxCharsPerEntry: 100, maxTotalChars: 250 },
+        }),
+      )
       return
     }
 
@@ -152,5 +181,78 @@ describe("local AI gateway client", () => {
     await expect(
       requestLocalAISummary({ entryId: "e", language: "en", target: "content", content: "x" }),
     ).rejects.toThrow(/404/)
+  })
+
+  test("fills the context budget announced by the gateway", async () => {
+    configureLocalAI({ baseUrl: `${gatewayUrl}/budget` })
+
+    await fetchLocalAIConfig()
+
+    expect(getLocalAIContextBudget()).toEqual({
+      maxEntries: 5,
+      maxCharsPerEntry: 100,
+      maxTotalChars: 250,
+    })
+  })
+
+  test("keeps the conservative budget when the gateway does not announce one", async () => {
+    configureLocalAI({ baseUrl: gatewayUrl })
+
+    await fetchLocalAIConfig()
+
+    expect(getLocalAIContextBudget()).toEqual(DEFAULT_LOCAL_AI_CONTEXT_BUDGET)
+  })
+
+  test("names the gateway URL and status when its token is rejected", async () => {
+    configureLocalAI({ baseUrl: gatewayUrl, token: "bad-token" })
+
+    const error = await requestLocalAISummary({
+      entryId: "e",
+      language: "en",
+      target: "content",
+      content: "x",
+    }).catch((reason: Error) => reason)
+
+    expect(error).toBeInstanceOf(Error)
+    const message = (error as Error).message
+    expect(message).toContain(gatewayUrl)
+    expect(message).toContain("401")
+    expect(message).toContain("gateway token rejected")
+    expect(message.length).toBeLessThanOrEqual(300)
+  })
+
+  test("names the gateway URL and status when the upstream model fails", async () => {
+    configureLocalAI({ baseUrl: `${gatewayUrl}/broken` })
+
+    const error = await requestLocalAISummary({
+      entryId: "e",
+      language: "en",
+      target: "content",
+      content: "x",
+    }).catch((reason: Error) => reason)
+
+    expect(error).toBeInstanceOf(Error)
+    const message = (error as Error).message
+    expect(message).toContain(`${gatewayUrl}/broken`)
+    expect(message).toContain("502")
+    expect(message).toContain("upstream model error")
+    expect(message.length).toBeLessThanOrEqual(300)
+  })
+
+  test("reports an unreachable gateway with its base URL", async () => {
+    configureLocalAI({ baseUrl: "http://127.0.0.1:9" })
+
+    const error = await requestLocalAISummary({
+      entryId: "e",
+      language: "en",
+      target: "content",
+      content: "x",
+    }).catch((reason: Error) => reason)
+
+    expect(error).toBeInstanceOf(Error)
+    const message = (error as Error).message
+    expect(message).toContain("unreachable")
+    expect(message).toContain("http://127.0.0.1:9")
+    expect(message.length).toBeLessThanOrEqual(300)
   })
 })

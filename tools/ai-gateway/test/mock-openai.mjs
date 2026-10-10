@@ -7,6 +7,10 @@ import { createServer } from "node:http"
 const PORT = Number(process.env.MOCK_PORT || 8799)
 
 const completionFor = (prompt) => {
+  if (prompt.includes("Merge these")) return "Merged summary of every part."
+
+  if (prompt.includes("Translate the text below")) return "[mock chunk translation]"
+
   if (prompt.includes("Translate each section")) {
     // Echo the requested keys back so the gateway's JSON parsing (including the fenced-code
     // path) is exercised.

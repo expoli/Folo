@@ -470,10 +470,18 @@ class AIPersistServiceStatic {
   }
 
   async deleteSession(chatId: string) {
+    // Read the flag before deleting: local sessions exist only in this database.
+    const session = await this.getChatSession(chatId)
+
     await db.delete(aiChatMessagesTable).where(eq(aiChatMessagesTable.chatId, chatId))
     await db.delete(aiChatTable).where(eq(aiChatTable.chatId, chatId))
     // Clear session from cache
     this.clearSessionCache(chatId)
+
+    if (session?.isLocal) {
+      return
+    }
+
     await followClient.api.aiChatSessions.delete({ chatId }).catch((error) => {
       console.error("Failed to delete remote chat session:", error)
     })
@@ -503,9 +511,9 @@ class AIPersistServiceStatic {
   }
 
   async cleanupEmptySessions() {
-    const emptySessions = await db.values<[string]>(
+    const emptySessions = await db.values<[string, boolean | null]>(
       sql`
-        SELECT ${aiChatTable.chatId}
+        SELECT ${aiChatTable.chatId}, ${aiChatTable.isLocal}
         FROM ${aiChatTable}
         LEFT JOIN ${aiChatMessagesTable} ON ${aiChatTable.chatId} = ${aiChatMessagesTable.chatId}
         GROUP BY ${aiChatTable.chatId}
@@ -520,7 +528,10 @@ class AIPersistServiceStatic {
 
       // Clear deleted sessions from cache
       chatIdsToDelete.forEach((chatId) => this.clearSessionCache(chatId))
-      for (const chatId of chatIdsToDelete) {
+      for (const [chatId, isLocal] of emptySessions) {
+        // Local sessions never reached Folo's backend.
+        if (isLocal) continue
+
         await followClient.api.aiChatSessions.delete({ chatId }).catch((error) => {
           console.error("Failed to delete remote chat sessions:", error)
         })

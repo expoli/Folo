@@ -8,7 +8,7 @@ import { nanoid } from "nanoid"
 import type { StateCreator } from "zustand"
 
 import { AIPersistService } from "../../services"
-import { buildLocalAIContext } from "../../utils/local-ai-context"
+import { buildLocalAIContext, localAIContextQuestion } from "../../utils/local-ai-context"
 import { createChatTitleHandler, createChatTransport } from "../transport"
 import type { BizUIMessage, SendingUIMessage } from "../types"
 import { ZustandChat } from "./chat-instance"
@@ -78,6 +78,12 @@ export class ChatSliceActions {
   }
 
   async markSessionSynced() {
+    // A gateway keeps sessions in the local database only, so a local session must stay local:
+    // Folo's backend knows nothing about it and the next sync would look for a missing session.
+    if (isLocalAIEnabled()) {
+      return
+    }
+
     const currentChatId = this.get().chatId
     if (!currentChatId) {
       return
@@ -221,7 +227,9 @@ export class ChatSliceActions {
       // referenced entries (and their text) along with the request.
       const localAIContext =
         isLocalAIEnabled() && messageObj?.parts
-          ? buildLocalAIContext(messageObj.parts as BizUIMessage["parts"])
+          ? buildLocalAIContext(messageObj.parts as BizUIMessage["parts"], {
+              question: localAIContextQuestion(messageObj.parts as BizUIMessage["parts"]),
+            })
           : null
 
       // Use the AI SDK's sendMessage method
@@ -240,12 +248,38 @@ export class ChatSliceActions {
     }
   }
 
+  /** The user message a regenerate request belongs to, so the local context matches it. */
+  private getUserMessageParts(messageId: string): BizUIMessage["parts"] | null {
+    const messages = this.getMessages()
+    const index = messages.findIndex((message) => message.id === messageId)
+
+    // `messageId` normally points at the assistant answer; the question is the user message
+    // before it (or the message itself when the user message is regenerated).
+    if (index !== -1 && messages[index]?.role === "user") {
+      return messages[index].parts
+    }
+
+    for (let i = (index === -1 ? messages.length : index) - 1; i >= 0; i--) {
+      const message = messages[i]
+      if (message?.role === "user") return message.parts
+    }
+
+    return null
+  }
+
   regenerate = async ({ messageId, ...options }: { messageId: string } & ChatRequestOptions) => {
     try {
+      // Regenerating must ship the same local context as the original send; the gateway has no
+      // server-side history to replay it from.
+      const parts = isLocalAIEnabled() ? this.getUserMessageParts(messageId) : null
+      const localAIContext = parts
+        ? buildLocalAIContext(parts, { question: localAIContextQuestion(parts) })
+        : null
+
       // Use the AI SDK's regenerate method
       const finalOptions = merge(
         {
-          body: { scene: this.get().scene },
+          body: { scene: this.get().scene, ...(localAIContext ? { localAIContext } : {}) },
         },
         options,
       )

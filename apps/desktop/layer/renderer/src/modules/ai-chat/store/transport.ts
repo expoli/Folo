@@ -1,5 +1,5 @@
 import { env } from "@follow/shared/env.desktop"
-import { getLocalAIConfig } from "@follow/store/ai-local/config"
+import { createLocalAIHeaders, getLocalAIConfig } from "@follow/store/ai-local/config"
 import type { HttpChatTransportInitOptions, UIMessageChunk } from "ai"
 import { HttpChatTransport, parseJsonEventStream, uiMessageChunkSchema } from "ai"
 
@@ -56,6 +56,10 @@ export function createChatTransport({ onValue, titleHandler }: CreateChatTranspo
     api: useLocalAI ? `${localAIConfig.baseUrl}/ai/chat` : `${env.VITE_API_URL}/ai/chat`,
     // Folo's API authenticates with cookies; a self-hosted gateway has none to send.
     credentials: useLocalAI ? "omit" : "include",
+    // The gateway checks `GATEWAY_TOKEN` on every request except `/health`, so the chat
+    // (send / regenerate / resume) needs the bearer token. `createDesktopAPIHeaders` is still
+    // sent per request by `ChatSliceActions`; the two maps are merged by the AI SDK.
+    headers: useLocalAI ? () => createLocalAIHeaders() : undefined,
     // Add selected model to request body
     body: () => {
       const modelState = getAIModelState()

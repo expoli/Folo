@@ -44,7 +44,33 @@ await check("GET /health", async () => {
   assert(response.ok, `status ${response.status}`)
   const body = await response.json()
   assert(body.ok === true, "health payload is not ok")
+  assert(body.probe === undefined, "plain /health must not probe the upstream")
   return `upstream ${body.upstream}, default ${body.defaultModel}`
+})
+
+await check("GET /health?probe=1 reports the model call", async () => {
+  const response = await fetch(`${gatewayUrl}/health?probe=1`)
+  assert(response.ok, `status ${response.status}`)
+  const body = await response.json()
+  assert(body.ok === true, "health payload is not ok")
+  assert(body.probe?.ok === true, `probe failed: ${JSON.stringify(body.probe)}`)
+  assert(typeof body.probe.latencyMs === "number", "missing latencyMs")
+  return `model answered in ${body.probe.latencyMs}ms`
+})
+
+await check("GET /ai/chat/config announces the chat context budget", async () => {
+  const response = await fetch(`${gatewayUrl}/ai/chat/config`, { headers })
+  assert(response.ok, `status ${response.status}`)
+  const body = await response.json()
+  const budget = body.localAIContext
+  assert(budget && typeof budget === "object", "missing localAIContext")
+  for (const key of ["maxEntries", "maxCharsPerEntry", "maxTotalChars"]) {
+    assert(
+      typeof budget[key] === "number" && budget[key] > 0,
+      `invalid localAIContext.${key}: ${budget[key]}`,
+    )
+  }
+  return `${budget.maxEntries} entries x ${budget.maxCharsPerEntry} chars, ${budget.maxTotalChars} total`
 })
 
 await check("GET /ai/chat/config returns a model list", async () => {
@@ -169,6 +195,67 @@ await check("POST /ai/translation/batch streams NDJSON", async () => {
   assert(parsed[0].id === "entry-1", `unexpected first id ${JSON.stringify(parsed[0])}`)
   assert(parsed[0].data.title, "missing translated title")
   return `${parsed.length} line(s), keys=${Object.keys(parsed[0].data).join(",")}`
+})
+
+await check("POST /ai/summary chunks a long article and reports its coverage", async () => {
+  const paragraph = "Sentence about the article. ".repeat(40)
+  const content = Array.from({ length: 12 }, (_, index) => `Part ${index}. ${paragraph}`).join(
+    "\n\n",
+  )
+  assert(content.length > 12000, `fixture too short: ${content.length}`)
+
+  const response = await fetch(`${gatewayUrl}/ai/summary`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      entryId: "entry-long",
+      language: "en",
+      target: "content",
+      title: "Long article",
+      content,
+    }),
+  })
+  assert(response.ok, `status ${response.status}`)
+  const body = await response.json()
+  assert(typeof body.data === "string" && body.data.length > 0, "empty summary")
+  assert(
+    body.data.includes("Summarized the full article"),
+    `missing coverage note: ${body.data.slice(0, 80)}`,
+  )
+  assert(body.data.includes("Merged summary"), "the merged summary is missing")
+  return `${content.length} chars -> ${JSON.stringify(body.data.slice(0, 60))}`
+})
+
+await check("POST /ai/translation/batch chunks a long field", async () => {
+  const content = Array.from(
+    { length: 10 },
+    (_, index) => `Paragraph ${index}. ${"word ".repeat(200)}`,
+  ).join("\n\n")
+  assert(content.length > 8000, `fixture too short: ${content.length}`)
+
+  const response = await fetch(`${gatewayUrl}/ai/translation/batch`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      language: "zh-CN",
+      fields: ["content"],
+      mode: "translation-only",
+      entries: [{ id: "entry-long", content }],
+    }),
+  })
+  assert(response.ok, `status ${response.status}`)
+
+  const lines = (await response.text()).split("\n").filter((line) => line.trim())
+  assert(lines.length === 1, `expected one NDJSON line, got ${lines.length}`)
+  const parsed = JSON.parse(lines[0])
+  assert(parsed.id === "entry-long", `unexpected id ${parsed.id}`)
+  const parts = String(parsed.data.content).split("\n\n")
+  assert(parts.length >= 2, `expected a chunked translation, got ${parts.length} part(s)`)
+  assert(
+    parts.every((part) => part === "[mock chunk translation]"),
+    `unexpected chunk payloads: ${JSON.stringify(parts.slice(0, 2))}`,
+  )
+  return `${content.length} chars -> ${parts.length} chunk(s)`
 })
 
 const failed = results.filter((result) => !result.ok)

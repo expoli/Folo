@@ -47,7 +47,16 @@ to keep content on your machine:
 | OpenAI    | `https://api.openai.com/v1` | needs a real `AI_API_KEY`                      |
 
 Long articles and summaries need a decent context window; 32k+ is comfortable, small models will
-truncate.
+truncate. The gateway never cuts content silently:
+
+- summaries of more than `AI_SUMMARY_CHUNK_CHARS` (default `12000`) characters are written part by
+  part and then merged into one summary; the result carries a `_Summarized the full article in N
+parts …_` note so a merged summary is not mistaken for a partial one;
+- translation fields longer than `AI_TRANSLATION_CHUNK_CHARS` (default `8000`) characters are split
+  at paragraph boundaries, translated chunk by chunk, and rejoined per field (same NDJSON
+  `{ id, data }` protocol);
+- the client only ships as much article text as `AI_CONTEXT_*` allows, and marks every cut it has
+  to make inside the text (`…[truncated N chars]`).
 
 ## 2. Point the client at the gateway
 
@@ -72,6 +81,19 @@ keep both paths in one binary.
 
 Restart is required after changing the env: the config is read at app bootstrap.
 
+A model with a large context (deepseek-flash and friends: 128k) can take a lot more article text
+than the defaults. The gateway tells the client how much to send, so the budget lives with the
+model:
+
+```bash
+AI_CONTEXT_MAX_ENTRIES=20          # max articles attached to one chat request
+AI_CONTEXT_MAX_CHARS_PER_ENTRY=20000  # per article, when several are attached
+AI_CONTEXT_MAX_TOTAL_CHARS=60000   # whole request; a single referenced article may use all of it
+```
+
+These values are served by `GET /ai/chat/config` (`localAIContext`). A client build that predates
+the field — or a gateway that predates it — falls back to 20 articles x 1500 characters.
+
 ## 3. Verify
 
 ```bash
@@ -87,31 +109,38 @@ the gateway.
 
 ## Endpoints
 
-| Method | Path                    | Request                                                                                          | Response                                                                      |
-| ------ | ----------------------- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------- |
-| `POST` | `/ai/chat`              | AI SDK UI request: `{ id, messages, trigger, model?, scene?, localAIContext? }`                  | AI SDK UI message stream (`text/event-stream`)                                |
-| `GET`  | `/ai/chat/:id/stream`   | –                                                                                                | always `204` (no server-side chat history to resume)                          |
-| `GET`  | `/ai/chat/config`       | –                                                                                                | `{ defaultModel, availableModels, availableModelsMenu, usage, rateLimit, … }` |
-| `POST` | `/ai/summary`           | `{ entryId, language, target, title, content }`                                                  | `{ code: 0, data: string \| null }`                                           |
-| `POST` | `/ai/translation/batch` | `{ entries: [{ id, title, description, content, readabilityContent }], language, fields, mode }` | NDJSON, one `{ id, data }` line per entry                                     |
-| `GET`  | `/health`               | –                                                                                                | `{ ok, upstream, defaultModel, models }`                                      |
+| Method | Path                    | Request                                                                                          | Response                                                                    |
+| ------ | ----------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------- |
+| `POST` | `/ai/chat`              | AI SDK UI request: `{ id, messages, trigger, model?, scene?, localAIContext? }`                  | AI SDK UI message stream (`text/event-stream`)                              |
+| `GET`  | `/ai/chat/:id/stream`   | –                                                                                                | always `204` (no server-side chat history to resume)                        |
+| `GET`  | `/ai/chat/config`       | –                                                                                                | `{ defaultModel, availableModels, availableModelsMenu, localAIContext, … }` |
+| `POST` | `/ai/summary`           | `{ entryId, language, target, title, content }`                                                  | `{ code: 0, data: string \| null }`                                         |
+| `POST` | `/ai/translation/batch` | `{ entries: [{ id, title, description, content, readabilityContent }], language, fields, mode }` | NDJSON, one `{ id, data }` line per entry                                   |
+| `GET`  | `/health`               | `?probe=1` to also call the model once                                                           | `{ ok, upstream, defaultModel, models, probe? }`                            |
 
 All POST bodies are JSON; `Content-Type` of the chat response must stay `text/event-stream` — the
 client's `HttpChatTransport` parses it as a UI message stream.
 
+`GET /health?probe=1` performs one minimal model call (`maxOutputTokens=1`) and returns
+`{ ok, upstream, defaultModel, probe: { ok, latencyMs, error? } }`, which tells "the gateway is up"
+apart from "the model/upstream is broken". `/health` is exempt from `GATEWAY_TOKEN`, so a wrong
+gateway token shows up as a 401 on the other endpoints instead (the client reports "gateway token
+rejected"). Plain `GET /health` stays instant and never touches the model.
+
 ## Client changes in this fork
 
-| File                                                                             | Change                                                                                          |
-| -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `packages/internal/store/src/modules/ai-local/config.ts`                         | gateway config registry (`configureLocalAI`, `isLocalAIEnabled`)                                |
-| `packages/internal/store/src/modules/ai-local/client.ts`                         | summary / translation / chat-config calls against the gateway                                   |
-| `packages/internal/store/src/modules/summary/store.ts`                           | summary goes through the gateway when enabled                                                   |
-| `packages/internal/store/src/modules/translation/store.ts`                       | translation batch goes through the gateway; the free-plan block no longer applies locally       |
-| `apps/desktop/…/ai-chat/store/transport.ts`                                      | chat transport (`api` + `credentials`) switches to the gateway                                  |
-| `apps/desktop/…/ai-chat/hooks/useAIConfiguration.ts`                             | model picker reads the gateway model list                                                       |
-| `apps/desktop/…/ai-chat/utils/local-ai-context.ts` + `chat-core/chat-actions.ts` | resolves the chat context blocks to entry text, because the gateway cannot read Folo's database |
-| `apps/desktop/…/entry-column/item.tsx`, `entry-content/hooks.tsx`                | translation prefetch is not gated on the paid plan when the gateway is used                     |
-| `apps/desktop/layer/renderer/src/main.tsx`, `apps/mobile/src/main.tsx`           | wire the env vars into `configureLocalAI`                                                       |
+| File                                                                             | Change                                                                                    |
+| -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `packages/internal/store/src/modules/ai-local/config.ts`                         | gateway config registry (`configureLocalAI`, `isLocalAIEnabled`)                          |
+| `packages/internal/store/src/modules/ai-local/client.ts`                         | summary / translation / chat-config calls against the gateway                             |
+| `packages/internal/store/src/modules/summary/store.ts`                           | summary goes through the gateway when enabled                                             |
+| `packages/internal/store/src/modules/translation/store.ts`                       | translation batch goes through the gateway; the free-plan block no longer applies locally |
+| `apps/desktop/…/ai-chat/store/transport.ts`                                      | chat transport (`api` + `credentials` + gateway bearer token) switches to the gateway     |
+| `apps/desktop/…/ai-chat/hooks/useAIConfiguration.ts`                             | model picker reads the gateway model list                                                 |
+| `apps/desktop/…/ai-chat/utils/local-ai-context.ts` + `chat-core/chat-actions.ts` | resolves the context blocks to entry text, within the gateway's context budget            |
+| `apps/desktop/…/ai-chat-session/*`, `…/ai-chat/services/index.ts`                | local sessions stay local: no sync, unread query, or remote delete                        |
+| `apps/desktop/…/entry-column/item.tsx`, `entry-content/hooks.tsx`                | translation prefetch is not gated on the paid plan when the gateway is used               |
+| `apps/desktop/layer/renderer/src/main.tsx`, `apps/mobile/src/main.tsx`           | wire the env vars into `configureLocalAI`                                                 |
 
 ## Limits & caveats
 
@@ -124,6 +153,9 @@ client's `HttpChatTransport` parses it as a UI message stream.
   not implemented here — chats keep their default/edited title.
 - **Stream resumption** is a no-op (`204`): restarting the app mid-answer cannot continue the
   answer, it just stops.
+- **Chat history stays local**: sessions started against the gateway are never marked as synced and
+  are not sent to Folo (`markSessionSynced`, the session sync, the unread query and session deletion
+  all skip the backend). Task sessions / `Settings → AI` task lists still come from Folo.
 - Both the plan gate for BYOK and AI quota live on Folo's servers; the local path bypasses them for
   the three endpoints above. Review your own situation before using this with a Folo account you
   care about — see the project README and Folo's Terms of Service.

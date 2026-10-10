@@ -1,3 +1,4 @@
+import { isLocalAIEnabled } from "@follow/store/ai-local/config"
 import type {
   DeleteSessionRequest,
   GetMessagesQuery,
@@ -66,9 +67,11 @@ export const useAIChatMessagesQuery = (
 }
 
 export const useUnreadChatSessionsQuery = (filters?: GetUnreadQuery) => {
+  // Unread state lives on Folo's sessions, which a local gateway build never creates.
   const { data } = useQuery({
     queryKey: aiChatSessionKeys.unread,
     queryFn: () => followApi.aiChatSessions.unread(filters).then((res) => res.data),
+    enabled: !isLocalAIEnabled(),
   })
   return data
 }
