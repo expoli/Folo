@@ -39,18 +39,23 @@ const ymlMapsMap = {
 // Keep external runtime modules and their production dependency trees in app.asar.
 // Scoped packages are copied as a whole because cleanSources operates on top-level entries.
 const keepModules = new Set([
+  "@ai-sdk",
   "@asamuzakjp",
   "@bramus",
   "@csstools",
   "@exodus",
+  "@standard-schema",
+  "@workflow",
   "bidi-js",
   "css-tree",
   "data-urls",
   "decimal.js",
   "entities",
+  "eventsource-parser",
   "font-list",
   "html-encoding-sniffer",
   "is-potential-custom-element-name",
+  "json-schema",
   "jsdom",
   "lru-cache",
   "mdn-data",
@@ -71,6 +76,8 @@ const keepModules = new Set([
   "whatwg-url",
   "xml-name-validator",
   "xmlchars",
+  // Required at runtime by @ai-sdk/provider-utils and @ai-sdk/openai-compatible (peer dep).
+  "zod",
 ])
 const keepLanguages = new Set(["en", "en_GB", "en-US", "en_US"])
 
