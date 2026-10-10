@@ -274,33 +274,52 @@ const buildTimelineContext = (
   return entries.length > 0 ? { label: window.label, entries } : null
 }
 
-const blockEntryIds = (block: AIChatContextBlock): string[] => {
-  const { entryIdByView, entryIdByFeed } = useEntryStore.getState()
+/**
+ * What the context blocks describe: the timeline a message is about plus the filter on it.
+ * `unreadOnly` is a filter, not a scope of its own — upstream the server reads "the current
+ * timeline, unread only", so a union of both would answer about the whole timeline instead.
+ */
+interface ContextScope {
+  feedIds: string[]
+  view: FeedViewType | null
+  onlyUnread: boolean
+}
 
-  switch (block.type) {
-    case "mainEntry": {
-      return block.value ? [block.value] : []
-    }
-    case "mainFeed": {
-      return Array.from(entryIdByFeed[block.value] ?? [])
-    }
-    case "mainView": {
-      const view = Number(block.value)
-      const viewIds =
-        entryIdByView[(Number.isFinite(view) ? view : FeedViewType.All) as FeedViewType]
-      return Array.from(viewIds ?? [])
-    }
-    case "unreadOnly": {
-      // `entryIdByView[All]` holds every loaded entry; the block only means the unread ones.
-      return Array.from(entryIdByView[FeedViewType.All] ?? []).filter((entryId) => {
-        const entry = getEntry(entryId)
-        return entry ? entry.read === false : false
-      })
-    }
-    default: {
-      return []
+const readContextScope = (blocks: { type: string; value: string }[]): ContextScope => {
+  const feedIds: string[] = []
+  let view: FeedViewType | null = null
+
+  for (const block of blocks) {
+    if (block.type === "mainFeed" && block.value) {
+      // A folder block carries its feeds comma-joined.
+      for (const feedId of block.value.split(",")) {
+        if (feedId.trim()) feedIds.push(feedId.trim())
+      }
+    } else if (block.type === "mainView" && block.value) {
+      const parsed = Number(block.value)
+      view = Number.isFinite(parsed) ? (parsed as FeedViewType) : null
     }
   }
+
+  return {
+    feedIds,
+    view,
+    onlyUnread: blocks.some((block) => block.type === "unreadOnly"),
+  }
+}
+
+/** Entries of the described timeline: the narrower one if there is one, unread only when asked. */
+const resolveScopeEntries = (scope: ContextScope): EntryModel[] => {
+  const { entryIdByView, entryIdByFeed } = useEntryStore.getState()
+  const ids = scope.feedIds.length
+    ? new Set(scope.feedIds.flatMap((feedId) => Array.from(entryIdByFeed[feedId] ?? [])))
+    : new Set(Array.from(entryIdByView[scope.view ?? FeedViewType.All] ?? []))
+
+  const entries = Array.from(ids)
+    .map((entryId) => getEntry(entryId))
+    .filter((entry): entry is EntryModel => !!entry)
+
+  return scope.onlyUnread ? entries.filter((entry) => entry.read === false) : entries
 }
 
 /** Loose lexical terms: latin words of 2+ characters plus single CJK characters. */
@@ -379,16 +398,32 @@ export const buildLocalAIContext = (
     blocks.filter((block) => block.type === "mainEntry" && block.value).map((block) => block.value),
   )
 
-  const entryIds = new Set<string>()
-  for (const block of blocks) {
-    for (const entryId of blockEntryIds(block as AIChatContextBlock)) {
-      entryIds.add(entryId)
+  // A timeline block scopes the request: the feed or view it names, unread only when also asked.
+  // Without one (an article chat) the candidates are the explicitly referenced entries alone.
+  const hasTimelineBlock = blocks.some(
+    (block) =>
+      block.type === "mainFeed" || block.type === "mainView" || block.type === "unreadOnly",
+  )
+  const candidates: EntryModel[] = hasTimelineBlock
+    ? resolveScopeEntries(readContextScope(blocks))
+    : []
+
+  if (hasTimelineBlock) {
+    const seen = new Set(candidates.map((entry) => entry.id))
+    for (const entryId of explicitEntryIds) {
+      const entry = getEntry(entryId)
+      // A referenced article stays in the context even when the filter would drop it.
+      if (entry && !seen.has(entry.id)) {
+        candidates.push(entry)
+        seen.add(entry.id)
+      }
+    }
+  } else {
+    for (const entryId of explicitEntryIds) {
+      const entry = getEntry(entryId)
+      if (entry) candidates.push(entry)
     }
   }
-
-  const candidates = Array.from(entryIds)
-    .map((entryId) => getEntry(entryId))
-    .filter((entry): entry is NonNullable<typeof entry> => !!entry)
 
   if (candidates.length === 0) return null
 

@@ -22,6 +22,11 @@ export const DEFAULT_TRANSLATION_SYSTEM_PROMPT = [
   "markdown and inline code, and never add explanations or notes.",
 ].join(" ")
 
+export const DEFAULT_TITLE_SYSTEM_PROMPT = [
+  "You name conversations. Reply with a short title of at most six words, in the language the",
+  "conversation is written in: no quotes, no trailing punctuation, no explanations.",
+].join(" ")
+
 // The app has no access to Folo's backend from the main process, so a request without attached
 // context really has no entries. Say that instead of inventing a timeline or feed list.
 export const NO_CONTEXT_NOTE = [

@@ -32,6 +32,16 @@ const setEntries = (
     entryIdByView: {
       [FeedViewType.All]: new Set(allViewIds),
     } as Record<FeedViewType, Set<string>>,
+    // Feed-scoped blocks index by feed, so the fixture keeps both indexes in sync.
+    entryIdByFeed: entries.reduce<Record<string, Set<string>>>((index, entry) => {
+      const feedId = entry.feedId ?? ""
+      if (!feedId) return index
+
+      const ids = index[feedId] ?? new Set<string>()
+      ids.add(entry.id)
+      index[feedId] = ids
+      return index
+    }, {}),
   })
 }
 
@@ -61,6 +71,12 @@ const unreadOnlyBlock = (): AIChatContextBlock => ({
   id: "block-unread",
   type: "unreadOnly",
   value: "",
+})
+
+const feedBlock = (feedId: string): AIChatContextBlock => ({
+  id: `block-feed-${feedId}`,
+  type: "mainFeed",
+  value: feedId,
 })
 
 describe("buildLocalAIContext", () => {
@@ -395,5 +411,83 @@ describe("parseMentionDateWindow", () => {
     ).toBe("2026-01-01")
     expect(parseMentionDateWindow("no mention here", now)).toBeNull()
     expect(parseMentionDateWindow('<mention-date text="sometime"></mention-date>', now)).toBeNull()
+  })
+})
+
+// `unreadOnly` filters the timeline a message is about, it is not a timeline of its own: sending the
+// union of both blocks answered about every unread entry of every feed.
+describe("timeline scope of the context blocks", () => {
+  beforeEach(() => {
+    resetLocalAI()
+    setEntries([])
+  })
+
+  test("keeps a feed summary inside that feed, unread only", () => {
+    setEntries([
+      createEntry("watched-unread", { feedId: "feed-watched", read: false }),
+      createEntry("watched-read", { feedId: "feed-watched", read: true }),
+      createEntry("other-unread", { feedId: "feed-other", read: false }),
+    ])
+
+    const context = buildLocalAIContext([blockPart([feedBlock("feed-watched"), unreadOnlyBlock()])])
+
+    expect(context?.entries.map((entry) => entry.id)).toEqual(["watched-unread"])
+  })
+
+  test("keeps every entry of the feed when no filter is set", () => {
+    setEntries([
+      createEntry("watched-unread", { feedId: "feed-watched", read: false }),
+      createEntry("watched-read", { feedId: "feed-watched", read: true }),
+      createEntry("other", { feedId: "feed-other", read: false }),
+    ])
+
+    const context = buildLocalAIContext([blockPart([feedBlock("feed-watched")])])
+
+    expect(context?.entries.map((entry) => entry.id).sort()).toEqual([
+      "watched-read",
+      "watched-unread",
+    ])
+  })
+
+  test("reads a folder block as the union of its feeds", () => {
+    setEntries([
+      createEntry("a", { feedId: "feed-a", read: true }),
+      createEntry("b", { feedId: "feed-b", read: true }),
+      createEntry("c", { feedId: "feed-c", read: true }),
+    ])
+
+    const context = buildLocalAIContext([blockPart([feedBlock("feed-a,feed-b")])])
+
+    expect(context?.entries.map((entry) => entry.id).sort()).toEqual(["a", "b"])
+  })
+
+  test("filters a view block too, and the whole timeline when that is the scope", () => {
+    setEntries([
+      createEntry("unread", { feedId: "feed-a", read: false }),
+      createEntry("already-read", { feedId: "feed-b", read: true }),
+    ])
+
+    expect(
+      buildLocalAIContext([blockPart([allEntriesBlock(), unreadOnlyBlock()])])?.entries.map(
+        (entry) => entry.id,
+      ),
+    ).toEqual(["unread"])
+    expect(buildLocalAIContext([blockPart([unreadOnlyBlock()])])?.entries.map((e) => e.id)).toEqual(
+      ["unread"],
+    )
+  })
+
+  test("keeps a referenced article even when it sits outside the filter", () => {
+    setEntries([
+      createEntry("pinned", { feedId: "feed-other", read: true }),
+      createEntry("in-feed", { feedId: "feed-watched", read: false }),
+    ])
+
+    const context = buildLocalAIContext([
+      blockPart([feedBlock("feed-watched"), mainEntryBlock("pinned")]),
+    ])
+
+    expect(context?.entries[0]?.id).toBe("pinned")
+    expect(context?.entries.map((entry) => entry.id).sort()).toEqual(["in-feed", "pinned"])
   })
 })

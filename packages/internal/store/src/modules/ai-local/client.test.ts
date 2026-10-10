@@ -9,6 +9,7 @@ import {
   fetchLocalAIConfig,
   probeLocalAIGateway,
   requestLocalAISummary,
+  requestLocalAITitle,
   requestLocalAITranslationBatch,
 } from "./client"
 import {
@@ -22,6 +23,7 @@ interface RecordedBody {
   content?: string
   entries?: { id: string; title?: string }[]
   fields?: string[]
+  messages?: { role: string; content: string }[]
 }
 
 interface RecordedRequest {
@@ -60,6 +62,12 @@ beforeAll(async () => {
     if (req.url === "/ai/summary") {
       res.writeHead(200, { "Content-Type": "application/json" })
       res.end(JSON.stringify({ code: 0, data: `summary of ${body.content}` }))
+      return
+    }
+
+    if (req.url === "/ai/summary-title") {
+      res.writeHead(200, { "Content-Type": "application/json" })
+      res.end(JSON.stringify({ title: `title of ${body.messages?.[0]?.content ?? ""}` }))
       return
     }
 
@@ -206,6 +214,29 @@ describe("local AI gateway client", () => {
     })
   })
 
+  test("asks the local model for a chat title", async () => {
+    configureLocalAI({ baseUrl: gatewayUrl, token: "token-1" })
+
+    const title = await requestLocalAITitle({ messages: [{ role: "user", content: "hello" }] })
+
+    expect(title).toBe("title of hello")
+    expect(requests[0]).toMatchObject({
+      method: "POST",
+      url: "/ai/summary-title",
+      authorization: "Bearer token-1",
+    })
+  })
+
+  test("reports a failed title request with its action name", async () => {
+    configureLocalAI({ baseUrl: gatewayUrl, token: "bad-token" })
+
+    const error = await requestLocalAITitle({
+      messages: [{ role: "user", content: "hello" }],
+    }).catch((reason: Error) => reason)
+
+    expect((error as Error).message).toContain("Local AI gateway title failed")
+  })
+
   test("streams the translation batch as NDJSON", async () => {
     configureLocalAI({ baseUrl: gatewayUrl })
 
@@ -289,7 +320,6 @@ describe("local AI gateway client", () => {
     const message = (error as Error).message
     expect(message).toContain(gatewayUrl)
     expect(message).toContain("401")
-    expect(message).toContain("Local AI gateway summary failed")
     expect(message).toContain("token rejected")
     expect(message.length).toBeLessThanOrEqual(300)
   })

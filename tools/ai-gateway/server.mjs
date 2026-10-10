@@ -12,6 +12,7 @@
  *   GET  /ai/chat/config          model list + empty quota + chat context budget
  *   POST /ai/summary              entry summary (entry text travels in the request; long
  *                                 content is summarized in chunks and merged)
+ *   POST /ai/summary-title        short chat title, written by the same local model
  *   POST /ai/translation/batch    NDJSON stream of `{ id, data }`; long fields are translated
  *                                 chunk by chunk and rejoined per field
  *   GET  /health                  liveness probe (`?probe=1` also calls the model once)
@@ -53,6 +54,11 @@ const DEFAULT_TRANSLATION_SYSTEM_PROMPT = [
   "markdown and inline code, and never add explanations or notes.",
 ].join(" ")
 
+const DEFAULT_TITLE_SYSTEM_PROMPT = [
+  "You name conversations. Reply with a short title of at most six words, in the language the",
+  "conversation is written in: no quotes, no trailing punctuation, no explanations.",
+].join(" ")
+
 // The local gateway has no access to Folo's backend, so a request without attached context really
 // has no entries. Say that instead of inventing a timeline or feed list.
 const NO_CONTEXT_NOTE = [
@@ -91,6 +97,7 @@ const config = {
   },
   chatSystemPrompt: process.env.AI_CHAT_SYSTEM_PROMPT || DEFAULT_CHAT_SYSTEM_PROMPT,
   summarySystemPrompt: process.env.AI_SUMMARY_SYSTEM_PROMPT || DEFAULT_SUMMARY_SYSTEM_PROMPT,
+  titleSystemPrompt: process.env.AI_TITLE_SYSTEM_PROMPT || DEFAULT_TITLE_SYSTEM_PROMPT,
   translationSystemPrompt:
     process.env.AI_TRANSLATION_SYSTEM_PROMPT || DEFAULT_TRANSLATION_SYSTEM_PROMPT,
   maxBodyBytes: 32 * 1024 * 1024,
@@ -337,9 +344,15 @@ const handleChat = async (req, res, body) => {
     if (typeof entry?.content === "string") contextChars += entry.content.length
   }
 
+  const selection = (Array.isArray(body.localAIContext?.blocks) ? body.localAIContext.blocks : [])
+    .map((block) => `${block.type}:${String(block.value ?? "").slice(0, 24)}`)
+    .join(",")
+
   console.log(
     `[gateway] chat: model=${modelFor(body.model)} messages=${messages.length} ` +
-      `context=${contextBlocks} block(s)/${contextEntries} entrie(s)/${contextFeeds} feed(s)/${contextChars} chars`,
+      `context=${contextBlocks} block(s)/${contextEntries} entrie(s)/${contextFeeds} feed(s)/${contextChars} chars${
+        selection ? ` [${selection}]` : ""
+      }`,
   )
   if (localContext === "") {
     console.warn(
@@ -481,6 +494,46 @@ const summarizeContent = async ({ model, language, title, content }) => {
 
   // The coverage note stays explicit so a merged summary is never mistaken for a partial one.
   return merged ? `${merged}\n\n${coverage}` : coverage
+}
+
+/** Folo asks its server for a chat title; with a local model the gateway writes it instead. */
+const cleanTitle = (text) => {
+  const source = typeof text === "string" ? text.trim() : ""
+  const firstLine = source.split("\n")[0] ?? ""
+
+  return firstLine
+    .replace(/^["'“”‘’]+|["'“”‘’]+$/g, "")
+    .replace(/[.。！!？?]+$/g, "")
+    .trim()
+    .slice(0, 80)
+}
+
+const handleSummaryTitle = async (req, res, body) => {
+  const messages = Array.isArray(body.messages) ? body.messages : []
+  const transcript = messages
+    .map((message) => {
+      const role = typeof message?.role === "string" ? message.role : "user"
+      const content = typeof message?.content === "string" ? message.content : ""
+      return `${role}: ${content}`
+    })
+    .join("\n")
+    .trim()
+    .slice(0, 4000)
+
+  if (!transcript) {
+    sendJson(res, 400, { error: "Field `messages` is required" })
+    return
+  }
+
+  const { text } = await generateText({
+    model: resolveModel(modelFor(body.model)),
+    system: config.titleSystemPrompt,
+    prompt: transcript,
+    temperature: config.temperature,
+    maxOutputTokens: 32,
+  })
+
+  sendJson(res, 200, { title: cleanTitle(text) })
 }
 
 const handleSummary = async (req, res, body) => {
@@ -767,6 +820,11 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "POST" && pathname === "/ai/summary") {
       await handleSummary(req, res, await readJsonBody(req))
+      return
+    }
+
+    if (req.method === "POST" && pathname === "/ai/summary-title") {
+      await handleSummaryTitle(req, res, await readJsonBody(req))
       return
     }
 

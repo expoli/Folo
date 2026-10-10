@@ -152,12 +152,24 @@ export const buildChatSystemPrompt = (systemPrompt: string, localContext: string
 export const describeChatContext = (context: LocalAIContext | null | undefined) => {
   const entries = Array.isArray(context?.entries) ? context.entries : []
   const feeds = Array.isArray(context?.feeds) ? context.feeds : []
-  const blocks = Array.isArray(context?.blocks) ? context.blocks.length : 0
+  const blocks = Array.isArray(context?.blocks) ? context.blocks : []
 
   let contextChars = 0
   for (const entry of entries) {
     if (entry && typeof entry.content === "string") contextChars += entry.content.length
   }
 
-  return { blocks, entries: entries.length, feeds: feeds.length, contextChars }
+  // The selection the client sent, so a wrong scope (a feed summary that covered every feed) is
+  // visible in the log instead of having to be inferred from the answer.
+  const selection = blocks
+    .map((block) => `${block.type}:${String(block.value ?? "").slice(0, 24)}`)
+    .join(",")
+
+  return {
+    blocks: blocks.length,
+    entries: entries.length,
+    feeds: feeds.length,
+    contextChars,
+    selection,
+  }
 }

@@ -98,6 +98,26 @@ export const requestLocalAISummary = async (params: {
 }
 
 /**
+ * Same contract as `POST {API_URL}/ai/summary-title`, except the local model writes the title:
+ * Folo generates it on its own server, which a self-hosted gateway cannot reach.
+ */
+export const requestLocalAITitle = async (params: {
+  messages: { role: string; content: string }[]
+}): Promise<string | null> => {
+  const response = await request("/ai/summary-title", {
+    method: "POST",
+    headers: createLocalAIHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(params),
+  })
+
+  await assertOk(response, "title")
+
+  const payload = (await response.json()) as { title?: unknown }
+
+  return typeof payload?.title === "string" && payload.title.trim() ? payload.title.trim() : null
+}
+
+/**
  * Same contract as `POST {API_URL}/ai/translation/batch`: the returned response body is an
  * NDJSON stream of `{ id, data }` lines, consumed by `readNdjsonStream`.
  */

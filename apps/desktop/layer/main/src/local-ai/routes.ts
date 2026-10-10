@@ -10,6 +10,7 @@ import {
   resolveModelId,
 } from "./provider"
 import { handleSummaryRequest } from "./summary"
+import { handleSummaryTitleRequest } from "./title"
 import { handleTranslationBatchRequest } from "./translation"
 
 /** Waiting time of the optional model-list request; a slow endpoint falls back to the settings. */
@@ -192,6 +193,13 @@ export const routeLocalAIRequest = async (input: LocalAIRouteInput): Promise<Res
 
     if (method === "POST" && pathname === "/ai/summary") {
       return await handleSummaryRequest({
+        body: parseJsonBody(input.body),
+        model: createDirectModel({ config, apiKey }),
+      })
+    }
+
+    if (method === "POST" && pathname === "/ai/summary-title") {
+      return await handleSummaryTitleRequest({
         body: parseJsonBody(input.body),
         model: createDirectModel({ config, apiKey }),
       })

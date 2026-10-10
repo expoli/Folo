@@ -125,9 +125,19 @@ describe("describeChatContext", () => {
       describeChatContext({
         entries: [{ content: "12345" }, { content: "678" }],
         feeds: [{ title: "a" }],
-        blocks: [{ type: "mainEntry" }],
+        blocks: [
+          { type: "mainFeed", value: "feed-1" },
+          { type: "unreadOnly", value: "" },
+        ],
       }),
-    ).toEqual({ blocks: 1, entries: 2, feeds: 1, contextChars: 8 })
+    ).toEqual({
+      blocks: 2,
+      entries: 2,
+      feeds: 1,
+      contextChars: 8,
+      // The selection is logged, so a wrong scope is visible without guessing.
+      selection: "mainFeed:feed-1,unreadOnly:",
+    })
   })
 
   test("reports zeros for a request without context", () => {
@@ -136,6 +146,7 @@ describe("describeChatContext", () => {
       entries: 0,
       feeds: 0,
       contextChars: 0,
+      selection: "",
     })
   })
 })

@@ -171,6 +171,18 @@ await check("POST /ai/summary returns { code, data }", async () => {
   return JSON.stringify(body.data.slice(0, 40))
 })
 
+await check("POST /ai/summary-title writes a title", async () => {
+  const response = await fetch(`${gatewayUrl}/ai/summary-title`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ messages: [{ role: "user", content: "What did I miss today?" }] }),
+  })
+  assert(response.ok, `status ${response.status}`)
+  const body = await response.json()
+  assert(typeof body.title === "string" && body.title.length > 0, "empty title")
+  return JSON.stringify(body.title)
+})
+
 await check("POST /ai/translation/batch streams NDJSON", async () => {
   const response = await fetch(`${gatewayUrl}/ai/translation/batch`, {
     method: "POST",

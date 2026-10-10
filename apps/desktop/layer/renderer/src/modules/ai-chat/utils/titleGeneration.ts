@@ -1,3 +1,6 @@
+import { requestLocalAITitle } from "@follow/store/ai-local/client"
+import { isLocalAIEnabled } from "@follow/store/ai-local/config"
+
 import { followClient } from "~/lib/api-client"
 
 import { AIPersistService } from "../services"
@@ -26,6 +29,15 @@ export const generateChatTitle = async (chatId: string, messages: SendingUIMessa
       content,
     }
   })
+
+  // Folo's server writes the title upstream; a local gateway has no such route served by Folo, so
+  // the same local model writes it instead of failing on an unreachable backend.
+  if (isLocalAIEnabled()) {
+    return requestLocalAITitle({ messages: relevantMessages }).catch((error) => {
+      console.error("Failed to generate chat title locally:", error)
+      return null
+    })
+  }
 
   const response = await followClient.api.ai
     .summaryTitle({

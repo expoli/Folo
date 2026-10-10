@@ -279,6 +279,26 @@ describe("routeLocalAIRequest", () => {
     expect(calls[0]!.body).toMatchObject({ model: "model-a" })
   })
 
+  test("serves a chat title for the local model to write", async () => {
+    stubUpstream(() => completion('  "A tidy title."  '))
+
+    const response = await route({
+      path: "/ai/summary-title",
+      body: JSON.stringify({ messages: [{ role: "user", content: "hello" }] }),
+    })
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({ title: "A tidy title" })
+  })
+
+  test("rejects a title request without messages", async () => {
+    stubUpstream(() => completion("unused"))
+
+    const response = await route({ path: "/ai/summary-title", body: JSON.stringify({}) })
+
+    expect(response.status).toBe(400)
+  })
+
   test("serves a translation batch end to end", async () => {
     stubUpstream(() => completion(JSON.stringify({ title: "Titel" })))
 
