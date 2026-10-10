@@ -184,11 +184,21 @@ describe("describeChatContext", () => {
       entries: 2,
       withText: 2,
       matched: 2,
+      window: "",
       feeds: 1,
       contextChars: 8,
       // The selection is logged, so a wrong scope is visible without guessing.
       selection: "mainFeed:feed-1,unreadOnly:",
     })
+  })
+
+  test("logs the period the prompt asked about", () => {
+    expect(
+      describeChatContext({
+        entries: [{ content: "12345" }],
+        coverage: { matched: 94, window: "last 24 hours" },
+      }),
+    ).toMatchObject({ matched: 94, window: "last 24 hours" })
   })
 
   test("reports how many matched entries carried text", () => {
@@ -202,6 +212,7 @@ describe("describeChatContext", () => {
       entries: 3,
       withText: 1,
       matched: 40,
+      window: "Today",
       feeds: 0,
       contextChars: 5,
       selection: "",
@@ -214,6 +225,7 @@ describe("describeChatContext", () => {
       entries: 0,
       withText: 0,
       matched: 0,
+      window: "",
       feeds: 0,
       contextChars: 0,
       selection: "",

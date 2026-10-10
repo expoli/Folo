@@ -396,12 +396,17 @@ const handleChat = async (req, res, body) => {
     .map((block) => `${block.type}:${String(block.value ?? "").slice(0, 24)}`)
     .join(",")
 
+  const contextWindow =
+    typeof body.localAIContext?.coverage?.window === "string"
+      ? body.localAIContext.coverage.window
+      : ""
+
   console.log(
     `[gateway] chat: model=${modelFor(body.model)} messages=${messages.length} ` +
       `context=${contextBlocks} block(s)/${contextEntries} entrie(s)(${contextWithText} with text)/` +
-      `${contextMatched} matched/${contextFeeds} feed(s)/${contextChars} chars${
-        selection ? ` [${selection}]` : ""
-      }`,
+      `${contextMatched} matched/window=${contextWindow || "none"}/${contextFeeds} feed(s)/${
+        contextChars
+      } chars${selection ? ` [${selection}]` : ""}`,
   )
   if (localContext === "") {
     console.warn(

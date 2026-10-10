@@ -228,6 +228,9 @@ export const describeChatContext = (context: LocalAIContext | null | undefined) 
 
   const matched =
     typeof context?.coverage?.matched === "number" ? context.coverage.matched : entries.length
+  // The period the prompt asked about: without it a log line cannot tell whether a summary of
+  // "today" was scoped to today or to the whole view.
+  const window = typeof context?.coverage?.window === "string" ? context.coverage.window : ""
 
   // The selection the client sent, so a wrong scope (a feed summary that covered every feed) is
   // visible in the log instead of having to be inferred from the answer.
@@ -240,6 +243,7 @@ export const describeChatContext = (context: LocalAIContext | null | undefined) 
     entries: entries.length,
     withText,
     matched,
+    window,
     feeds: feeds.length,
     contextChars,
     selection,
