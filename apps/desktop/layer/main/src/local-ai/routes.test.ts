@@ -444,6 +444,52 @@ describe("routeLocalAIRequest", () => {
     expect(system?.content).toContain("9 summarised from their text")
   })
 
+  test("reads a batch that numbered its own articles from one", async () => {
+    const calls = stubUpstream((call) => {
+      if (call.body?.stream) return sseStream("Summary")
+
+      // The model ignores the numbers in the prompt and answers 1…N for the batch it was given,
+      // which must still attach to the right articles.
+      const messages = (call.body?.messages ?? []) as { content?: string }[]
+      const headings = [
+        ...messages
+          .map((message) => String(message.content ?? ""))
+          .join("\n")
+          .matchAll(/### \[(\d+)\]/g),
+      ]
+
+      return completion(
+        JSON.stringify(
+          Object.fromEntries(
+            headings.map((_, position) => [position + 1, `local note ${position + 1}`]),
+          ),
+        ),
+      )
+    })
+
+    const response = await route({
+      path: "/ai/chat",
+      body: JSON.stringify({
+        messages: [{ role: "user", parts: [{ type: "text", text: "Summarize today" }] }],
+        localAIContext: {
+          coverage: { matched: 9 },
+          entries: Array.from({ length: 9 }, (_, position) => ({
+            title: `Article ${position + 1}`,
+            body: `Text of article ${position + 1}`,
+          })),
+        },
+      }),
+    })
+
+    expect(await response.text()).toContain("Summary")
+
+    const system = (calls.at(-1)!.body?.messages as { role: string; content: string }[]).find(
+      (message) => message.role === "system",
+    )
+    expect(system?.content).toContain("9 summarised from their text")
+    expect(system?.content).not.toContain("(no text attached)")
+  })
+
   test("reuses the notes of an earlier summary", async () => {
     const calls = stubUpstream((call) =>
       call.body?.stream ? sseStream("Again") : completion('{"1": "A cached note"}'),

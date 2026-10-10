@@ -83,36 +83,61 @@ export const batchEntries = (entries: ReduceEntry[]): ReduceEntry[][] => {
 /** A numbered line a model replied instead of JSON: `1. …` or `2) …`. */
 const NUMBERED_LINE = /^[ \t]*(\d{1,4})[.)](.*)$/
 
+/** Reads the ordered `[number, note]` pairs of a JSON object or an array of objects. */
+const collectPairs = (parsed: unknown): [unknown, string][] => {
+  const pairs: [unknown, string][] = []
+  const push = (key: unknown, value: unknown) => {
+    const note = typeof value === "string" ? value.trim() : ""
+    if (note) pairs.push([key, note])
+  }
+
+  if (Array.isArray(parsed)) {
+    for (const item of parsed) {
+      if (!item || typeof item !== "object") continue
+      const record = item as Record<string, unknown>
+      push(record.index ?? record.i ?? record.id, record.note ?? record.summary ?? record.text)
+    }
+  } else if (parsed && typeof parsed === "object") {
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) push(key, value)
+  }
+
+  return pairs
+}
+
+/** Reads the same pairs out of a numbered list, which some models answer with instead. */
+const collectNumberedLines = (text: string): [unknown, string][] => {
+  const pairs: [unknown, string][] = []
+
+  for (const line of text.split("\n")) {
+    const match = NUMBERED_LINE.exec(line)
+    if (match) pairs.push([match[1], match[2]!.trim()])
+  }
+
+  return pairs
+}
+
 /** The reply of one batch, read as `{"1": "…"}` or `[{ "index": 1, "note": "…" }]`. */
 export const readBatchNotes = (text: string | null | undefined, wanted: number[]) => {
   const notes = new Map<number, string>()
   const wantedIndexes = new Set(wanted)
 
-  const accept = (key: unknown, value: unknown) => {
-    const index = Number(key)
-    const note = typeof value === "string" ? value.trim() : ""
-    if (wantedIndexes.has(index) && note) notes.set(index, note)
-  }
-
-  const parsed = parseJsonLoose(text)
-  if (Array.isArray(parsed)) {
-    for (const item of parsed) {
-      if (!item || typeof item !== "object") continue
-      const record = item as Record<string, unknown>
-      accept(record.index ?? record.i ?? record.id, record.note ?? record.summary ?? record.text)
+  const accept = (pairs: [unknown, string][]) => {
+    const direct = pairs.filter(([key]) => wantedIndexes.has(Number(key)))
+    if (direct.length > 0) {
+      for (const [key, note] of direct) notes.set(Number(key), note)
+      return
     }
-  } else if (parsed && typeof parsed === "object") {
-    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) accept(key, value)
+
+    // A model that numbered the articles of this batch itself (`{"1": …}` for a batch the prompt
+    // numbered 60…67) still answered about them in order, so the notes belong to them in order.
+    // Without this, such a batch reads as "no usable note" and its articles stay title-only.
+    if (pairs.length === wanted.length) {
+      wanted.forEach((index, position) => notes.set(index, pairs[position]![1]))
+    }
   }
 
-  if (notes.size > 0) return notes
-
-  // Some models answer a numbered list however firmly the prompt asks for JSON; read that too
-  // rather than throwing a whole batch of articles away.
-  for (const line of (text ?? "").split("\n")) {
-    const match = NUMBERED_LINE.exec(line)
-    if (match) accept(match[1], match[2])
-  }
+  accept(collectPairs(parseJsonLoose(text)))
+  if (notes.size === 0) accept(collectNumberedLines(text ?? ""))
 
   return notes
 }
@@ -196,6 +221,16 @@ export const summarizeEntries = async (params: {
 
           notes.set(entry.index, note)
           cache?.set(keyOf(entry), note)
+        }
+
+        if (read.size < batch.length) {
+          // Say what the model answered, so an unusable reply is visible in the log instead of
+          // only as a count of articles that got no note.
+          const preview = (text ?? "").replace(/\s+/g, " ").slice(0, 160)
+          log?.(
+            `[local-ai] reduce: ${batch.length - read.size} of a batch of ${batch.length} got no ` +
+              `note${preview ? ` — the reply was “${preview}”` : " (the reply was empty)"}`,
+          )
         }
       } catch (error) {
         // One unusable call must not lose the rest: those articles stay listed by title, and the

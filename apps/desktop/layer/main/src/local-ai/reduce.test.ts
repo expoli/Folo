@@ -68,6 +68,23 @@ describe("readBatchNotes", () => {
     ])
   })
 
+  test("maps the batch-local numbering of a reply onto the articles of the batch", () => {
+    // The prompt numbered its articles 60…61 while the model answered 1…2: the batch keeps its
+    // order, so these are the notes of those articles and not a batch to throw away.
+    expect([...readBatchNotes('{"1": "Sixty", "2": "Sixty-one"}', [60, 61]).entries()]).toEqual([
+      [60, "Sixty"],
+      [61, "Sixty-one"],
+    ])
+    expect([...readBatchNotes("1. Sixty\n2. Sixty-one", [60, 61]).entries()]).toEqual([
+      [60, "Sixty"],
+      [61, "Sixty-one"],
+    ])
+  })
+
+  test("does not map a reply whose count does not match the batch", () => {
+    expect(readBatchNotes('{"1": "Only one"}', [60, 61]).size).toBe(0)
+  })
+
   test("drops notes of articles that were not asked about, and empty ones", () => {
     const notes = readBatchNotes('{"1": "", "9": "Not asked for"}', [1, 2])
 
