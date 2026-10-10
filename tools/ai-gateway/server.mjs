@@ -21,11 +21,14 @@
  * backend): text-to-speech, AI tasks / daily digests, MCP services, AI chat memory,
  * server-side chat history sync.
  */
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { createServer } from "node:http"
+import { homedir } from "node:os"
+import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
 import { createOpenAI } from "@ai-sdk/openai"
-import { generateText, streamText } from "ai"
+import { createUIMessageStream, createUIMessageStreamResponse, generateText, streamText } from "ai"
 
 // Load `tools/ai-gateway/.env` when it exists, so the gateway starts with the same configuration
 // however it is launched (no shell-specific `source`, which breaks in fish). Real environment
@@ -421,6 +424,12 @@ const applyEntryNotes = (context, notes) => {
   }
 }
 
+/**
+ * Bumped whenever the batch prompt changes: notes written for an older wording (or an older kind of
+ * note) must not be served from the cache as if they were written for this one.
+ */
+const REDUCE_PROMPT_VERSION = 1
+
 /** Cheap, stable content hash: a cache key must survive a restart but never a changed article. */
 const textHash = (text) => {
   let hash = 2166136261
@@ -528,27 +537,117 @@ const reduceBatchPrompt = (batch, language) =>
       .join("\n\n"),
   ].join("\n")
 
-/** Notes of earlier summaries, so running the same one again costs nothing (oldest first). */
-const notesCache = new Map()
+/**
+ * Notes of earlier summaries, kept across restarts: the same day summarized again should not pay
+ * for the same articles twice. `AI_REDUCE_CACHE=0` keeps them in memory only, `AI_REDUCE_CACHE_FILE`
+ * moves the file.
+ */
+const NOTES_CACHE_VERSION = 1
 const NOTES_CACHE_LIMIT = 2000
-const cacheNotes = (key, note) => {
-  notesCache.set(key, note)
-  while (notesCache.size > NOTES_CACHE_LIMIT) {
-    const oldest = notesCache.keys().next().value
-    if (oldest === undefined) break
-    notesCache.delete(oldest)
+const NOTES_CACHE_MAX_BYTES = 2 * 1024 * 1024
+const notesCacheFile =
+  process.env.AI_REDUCE_CACHE_FILE || join(homedir(), ".cache", "folo-ai-gateway", "notes.json")
+const notesCacheEnabled = process.env.AI_REDUCE_CACHE !== "0"
+const notesCache = new Map()
+let notesCacheTimer = null
+let notesCacheDirty = false
+
+const readNotesCache = () => {
+  if (!notesCacheEnabled) return
+
+  try {
+    const parsed = JSON.parse(readFileSync(notesCacheFile, "utf8"))
+    if (parsed?.version !== NOTES_CACHE_VERSION || !parsed.notes) return
+
+    for (const [key, value] of Object.entries(parsed.notes)) {
+      if (typeof value?.note === "string" && value.note) {
+        notesCache.set(key, { note: value.note, usedAt: Number(value.usedAt) || 0 })
+      }
+    }
+
+    console.log(`[gateway] reduce: ${notesCache.size} cached note(s) from ${notesCacheFile}`)
+  } catch {
+    // No cache yet, or one that cannot be read: starting empty is cheaper than a failed request.
   }
 }
 
+const saveNotesCache = () => {
+  if (!notesCacheEnabled || !notesCacheDirty) return
+
+  notesCacheDirty = false
+  try {
+    const oldest = () => [...notesCache.entries()].sort((a, b) => a[1].usedAt - b[1].usedAt)[0]?.[0]
+    while (notesCache.size > NOTES_CACHE_LIMIT) notesCache.delete(oldest())
+
+    let bytes = JSON.stringify(Object.fromEntries(notesCache)).length
+    while (bytes > NOTES_CACHE_MAX_BYTES && notesCache.size > 1) {
+      notesCache.delete(oldest())
+      bytes = JSON.stringify(Object.fromEntries(notesCache)).length
+    }
+
+    mkdirSync(dirname(notesCacheFile), { recursive: true })
+    // A half-written file would lose every note, so the new content lands first and replaces the
+    // old one in one step.
+    const temporary = `${notesCacheFile}.tmp`
+    writeFileSync(
+      temporary,
+      JSON.stringify({ version: NOTES_CACHE_VERSION, notes: Object.fromEntries(notesCache) }),
+    )
+    renameSync(temporary, notesCacheFile)
+  } catch {
+    // A cache that cannot be written still works for this run.
+  }
+}
+
+const scheduleNotesSave = () => {
+  notesCacheDirty = true
+  if (!notesCacheEnabled || notesCacheTimer) return
+
+  notesCacheTimer = setTimeout(() => {
+    notesCacheTimer = null
+    saveNotesCache()
+  }, 1000)
+  notesCacheTimer.unref?.()
+}
+
+/** Reads a note and marks it as just used, so a hot note outlives a cold one. */
+const cacheGetNote = (key) => {
+  const stored = notesCache.get(key)
+  if (!stored) return undefined
+
+  stored.usedAt = Date.now()
+  scheduleNotesSave()
+  return stored.note
+}
+
+const cacheSetNote = (key, note) => {
+  notesCache.set(key, { note, usedAt: Date.now() })
+  scheduleNotesSave()
+}
+
+readNotesCache()
+process.on("exit", () => {
+  if (notesCacheTimer) clearTimeout(notesCacheTimer)
+  saveNotesCache()
+})
+// `exit` does not run for a signal, so a Ctrl+C must write the notes itself.
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.once(signal, () => {
+    if (notesCacheTimer) clearTimeout(notesCacheTimer)
+    saveNotesCache()
+    process.exit(0)
+  })
+}
+
 /** Summarizes the entries of a selection in batches, concurrently, reusing earlier notes. */
-const summarizeEntries = async ({ model, entries, language, modelId, signal }) => {
+const summarizeEntries = async ({ model, entries, language, modelId, signal, onProgress }) => {
   const notes = new Map()
   const keyOf = (entry) =>
-    `${modelId}|${language || ""}|${entry.title || ""}|${textHash(entry.body)}`
+    `v${REDUCE_PROMPT_VERSION}|${modelId}|${language || ""}|${entry.title || ""}|${textHash(entry.body)}`
 
   const pending = []
   for (const entry of entries.slice(0, config.reduce.maxEntries)) {
-    const cached = notesCache.get(keyOf(entry))
+    const cached = cacheGetNote(keyOf(entry))
     if (cached) {
       notes.set(entry.index, cached)
       continue
@@ -562,6 +661,10 @@ const summarizeEntries = async ({ model, entries, language, modelId, signal }) =
   let cursor = 0
   let calls = 0
   let failed = 0
+
+  // Report what the cache already answered before the first batch, so a fully cached pre-pass still
+  // tells the client where it stands.
+  onProgress?.(notes.size, Math.min(entries.length, config.reduce.maxEntries))
 
   const worker = async () => {
     for (;;) {
@@ -595,7 +698,7 @@ const summarizeEntries = async ({ model, entries, language, modelId, signal }) =
           }
 
           notes.set(entry.index, note)
-          cacheNotes(keyOf(entry), note)
+          cacheSetNote(keyOf(entry), note)
         }
 
         if (read.size < batch.length) {
@@ -607,6 +710,8 @@ const summarizeEntries = async ({ model, entries, language, modelId, signal }) =
               `note${preview ? ` — the reply was “${preview}”` : " (the reply was empty)"}`,
           )
         }
+
+        onProgress?.(notes.size, Math.min(entries.length, config.reduce.maxEntries))
       } catch (error) {
         // One unusable call must not lose the rest: those articles stay listed by title.
         failed += batch.length
@@ -630,13 +735,20 @@ const summarizeEntries = async ({ model, entries, language, modelId, signal }) =
 }
 
 /** Summarizes what the prompt cannot carry and attaches the notes to the context. */
-const reduceChatContext = async (context, model, language, modelId, signal) => {
+const reduceChatContext = async (context, model, language, modelId, signal, onProgress) => {
   const pending = pendingEntryTexts(context)
   if (pending.length === 0) return { context, reduceTexts: 0 }
 
   const startedAt = Date.now()
   console.log(`[gateway] reduce: summarizing ${pending.length} article(s) the prompt cannot carry…`)
-  const reduced = await summarizeEntries({ model, entries: pending, language, modelId, signal })
+  const reduced = await summarizeEntries({
+    model,
+    entries: pending,
+    language,
+    modelId,
+    signal,
+    onProgress,
+  })
 
   // Notes are attached in the order of the entries, so a day too wide even for the note budget
   // keeps a truthful, deterministic cut.
@@ -725,60 +837,84 @@ const handleChat = async (req, res, body) => {
   const controller = new AbortController()
   res.on("close", () => controller.abort())
 
-  // A selection too wide for the prompt arrives with the texts of the extra articles; summarize
-  // them first, so the answer covers the whole selection instead of its first twenty articles.
-  const reduced = await reduceChatContext(
-    body.localAIContext ?? null,
-    model,
-    typeof body.language === "string" ? body.language : null,
-    contextModelId,
-    controller.signal,
-  )
-  const localContext = formatLocalContext(reduced.context)
-
-  if (localContext === "") {
-    console.warn(
-      "[gateway] chat: no localAIContext arrived, so the model cannot see the Folo entries " +
-        "(the client attaches them only when the gateway is enabled and the chat has context blocks)",
-    )
-  }
-
   const languageInstruction =
     typeof body.language === "string" && body.language
       ? `Reply in ${languageName(body.language)}.`
       : ""
-  const systemPrompt = [
-    config.chatSystemPrompt,
-    languageInstruction,
-    localContext,
-    localContext === "" ? NO_CONTEXT_NOTE : "",
-  ]
-    .filter(Boolean)
-    .join("\n\n")
 
-  const result = streamText({
-    model,
-    system: systemPrompt,
-    messages,
-    temperature: config.temperature,
-    maxOutputTokens: config.maxOutputTokens,
-    // Reasoning models answer only after thinking; this line tells a spent budget apart from an
-    // upstream that answers in `reasoning_content` alone.
-    onFinish: ({ finishReason, usage }) => {
-      console.log(
-        `[gateway] chat done: finish=${finishReason ?? "?"} output=${usage?.outputTokens ?? "?"} ` +
-          `reasoning=${usage?.reasoningTokens ?? "?"}`,
-      )
-    },
-  })
-
-  const response = result.toUIMessageStreamResponse({
-    sendReasoning: true,
+  const stream = createUIMessageStream({
+    // Both streams report their model errors the same way: the inner one would otherwise answer
+    // with the SDK's generic "An error occurred.".
     onError: (error) => {
       console.error("[gateway] chat stream error:", error)
       return error?.message || "Local AI gateway error"
     },
+    execute: async ({ writer }) => {
+      // A selection too wide for the prompt arrives with the texts of the extra articles; summarize
+      // them first, so the answer covers the whole selection instead of its first twenty articles.
+      // The pre-pass takes a while on a busy day, so the client hears how far it is while it runs.
+      const reduced = await reduceChatContext(
+        body.localAIContext ?? null,
+        model,
+        typeof body.language === "string" ? body.language : null,
+        contextModelId,
+        controller.signal,
+        (done, total) => {
+          // One id, so every update replaces the previous line instead of stacking a part per batch.
+          writer.write({
+            type: "data-reduce-progress",
+            id: "reduce-progress",
+            data: { done, total },
+          })
+        },
+      )
+      const localContext = formatLocalContext(reduced.context)
+
+      if (localContext === "") {
+        console.warn(
+          "[gateway] chat: no localAIContext arrived, so the model cannot see the Folo entries " +
+            "(the client attaches them only when the gateway is enabled and the chat has context blocks)",
+        )
+      }
+
+      const systemPrompt = [
+        config.chatSystemPrompt,
+        languageInstruction,
+        localContext,
+        localContext === "" ? NO_CONTEXT_NOTE : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n")
+
+      writer.merge(
+        streamText({
+          model,
+          system: systemPrompt,
+          messages,
+          temperature: config.temperature,
+          maxOutputTokens: config.maxOutputTokens,
+          abortSignal: controller.signal,
+          // Reasoning models answer only after thinking; this line tells a spent budget apart from
+          // an upstream that answers in `reasoning_content` alone.
+          onFinish: ({ finishReason, usage }) => {
+            console.log(
+              `[gateway] chat done: finish=${finishReason ?? "?"} output=${
+                usage?.outputTokens ?? "?"
+              } reasoning=${usage?.reasoningTokens ?? "?"}`,
+            )
+          },
+        }).toUIMessageStream({
+          sendReasoning: true,
+          onError: (error) => {
+            console.error("[gateway] chat stream error:", error)
+            return error?.message || "Local AI gateway error"
+          },
+        }),
+      )
+    },
   })
+
+  const response = createUIMessageStreamResponse({ stream })
 
   setCorsHeaders(res)
   const headers = Object.fromEntries(response.headers.entries())

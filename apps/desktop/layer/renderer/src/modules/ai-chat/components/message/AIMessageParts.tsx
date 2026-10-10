@@ -1,7 +1,7 @@
 import "@xyflow/react/dist/style.css"
 
 import { alwaysFalse } from "@follow/utils"
-import type { ReasoningUIPart, TextUIPart, ToolUIPart } from "ai"
+import type { DataUIPart, ReasoningUIPart, TextUIPart, ToolUIPart } from "ai"
 import * as React from "react"
 import { useTranslation } from "react-i18next"
 
@@ -13,6 +13,9 @@ import { AIChainOfThought } from "../displays"
 import type { ChainReasoningPart } from "../displays/AIChainOfThought"
 import { AIMarkdownStreamingMessage } from "./AIMarkdownMessage"
 import { ToolInvocationComponent } from "./ToolInvocationComponent"
+
+/** The pre-pass reports how far it is as a data part, so the panel is not quiet while it runs. */
+type ReduceProgressUIPart = DataUIPart<{ "reduce-progress": { done: number; total: number } }>
 
 const LazyAIDisplayFlowPart = React.lazy(() =>
   import("../displays/AIDisplayFlowPart").then((mod) => ({ default: mod.AIDisplayFlowPart })),
@@ -35,7 +38,9 @@ export const AIMessageParts: React.FC<AIMessagePartsProps> = React.memo(
     }, [chatStatus, isLastMessage])
 
     const chainThoughtParts = React.useMemo(() => {
-      const parts = [] as (ChainReasoningPart[] | TextUIPart | ToolUIPart<BizUITools>)[]
+      const parts = [] as (
+        ChainReasoningPart[] | TextUIPart | ToolUIPart<BizUITools> | ReduceProgressUIPart
+      )[]
 
       let chainReasoningParts: ChainReasoningPart[] | null = null
       for (const part of message.parts) {
@@ -59,6 +64,16 @@ export const AIMessageParts: React.FC<AIMessagePartsProps> = React.memo(
           } else {
             parts.push(part as ToolUIPart<BizUITools>)
           }
+          continue
+        }
+
+        // Progress of the pre-pass: shown like text, but only the latest count is worth keeping.
+        if (part.type === "data-reduce-progress") {
+          const existing = parts.findIndex(
+            (item) => (item as ReduceProgressUIPart).type === part.type,
+          )
+          if (existing !== -1) parts.splice(existing, 1)
+          parts.push(part as ReduceProgressUIPart)
           continue
         }
 
@@ -95,9 +110,26 @@ export const AIMessageParts: React.FC<AIMessagePartsProps> = React.memo(
             )
           }
 
-          const part = partOrParts as TextUIPart | ToolUIPart<BizUITools>
+          const part = partOrParts as TextUIPart | ToolUIPart<BizUITools> | ReduceProgressUIPart
 
           switch (part.type) {
+            // The pre-pass of a wide summary runs before the answer: say how far it is instead of
+            // leaving the panel quiet. Only while streaming — an old message keeps no count.
+            case "data-reduce-progress": {
+              if (!shouldMessageAnimation) return null
+
+              const { done, total } = (part as ReduceProgressUIPart).data
+              return (
+                <div
+                  key={partKey}
+                  className="my-2 flex items-center gap-2 text-sm text-text-secondary"
+                >
+                  <i className="i-mgc-loading-3-cute-re size-4 animate-spin" />
+                  <span>{t("chat.reduce_progress", { done, total })}</span>
+                </div>
+              )
+            }
+
             case "text": {
               return (
                 <AIMarkdownStreamingMessage

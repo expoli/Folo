@@ -132,7 +132,12 @@ await check("POST /ai/chat summarizes the articles the prompt cannot carry", asy
   })
 
   assert(response.ok, `status ${response.status}`)
-  await response.text()
+  const chatStream = await response.text()
+  // The pre-pass is slow on a busy day, so the client is told how far it is.
+  assert(
+    chatStream.includes("data-reduce-progress"),
+    "the stream carries no progress for the reduce pre-pass",
+  )
 
   const captured = await fetch(`${mockUrl}/__last-request`)
   assert(captured.ok, `mock upstream captured no request (${captured.status}; is it running?)`)

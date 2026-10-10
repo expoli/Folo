@@ -5,6 +5,7 @@ import {
   readBatchNotes,
   REDUCE_BATCH_CHARS,
   REDUCE_BATCH_ENTRIES,
+  summarizeEntries,
   textHash,
 } from "./reduce"
 
@@ -94,6 +95,45 @@ describe("readBatchNotes", () => {
   test("reads nothing out of an unusable reply", () => {
     expect(readBatchNotes("I cannot help with that.", [1]).size).toBe(0)
     expect(readBatchNotes(null, [1]).size).toBe(0)
+  })
+  test("keys the cache by prompt version, model, language and content", async () => {
+    const seen: string[] = []
+    const cache = {
+      get: (key: string) => {
+        seen.push(key)
+        // A hit, so no model call is made and the key format is the only thing under test.
+        return "cached note"
+      },
+      set: () => {},
+    }
+
+    const result = await summarizeEntries({
+      model: {} as never,
+      entries: [{ index: 1, title: "An article", body: "Its text" }],
+      language: "zh-CN",
+      modelId: "model-a",
+      cache,
+    })
+
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).toMatch(/^v\d+\|model-a\|zh-CN\|An article\|/)
+    expect(result.notes.get(1)).toBe("cached note")
+    expect(result.cached).toBe(1)
+  })
+
+  test("reports the cached part before the first batch", async () => {
+    const progress: number[] = []
+
+    await summarizeEntries({
+      model: {} as never,
+      entries: [{ index: 1, title: "Cached", body: "Text" }],
+      modelId: "model-a",
+      cache: { get: () => "cached note", set: () => {} },
+      onProgress: (done) => progress.push(done),
+    })
+
+    // Nothing to call, but the client still hears that the pre-pass is done.
+    expect(progress).toEqual([1])
   })
 })
 

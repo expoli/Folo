@@ -62,6 +62,14 @@ export type BizUIDataTypes = {
     text: string
   }
   block: AIChatContextBlock[]
+  /**
+   * Progress of the local AI reduce pre-pass (`{done}/{total}` articles summarized so far). Sent
+   * while a wide summary is being prepared, with a stable id so each update replaces the last.
+   */
+  "reduce-progress": {
+    done: number
+    total: number
+  }
 }
 export type BizUIMessage = UIMessage<BizUIMetadata, BizUIDataTypes, BizUITools> & {
   createdAt: Date

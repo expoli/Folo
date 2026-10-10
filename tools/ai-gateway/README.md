@@ -106,6 +106,8 @@ AI_REDUCE_CONCURRENCY=3            # summarizing calls at the same time (default
 AI_REDUCE_MAX_ENTRIES=200          # articles the pre-pass reads per request
 AI_REDUCE_NOTE_CHARS=600           # longest note attached per article
 AI_REDUCE_NOTES_TOTAL_CHARS=30000  # all notes of one request together
+AI_REDUCE_CACHE=1                  # 0 keeps the notes in memory instead of on disk
+AI_REDUCE_CACHE_FILE=~/.cache/folo-ai-gateway/notes.json
 AI_REDUCE_SYSTEM_PROMPT=...        # prompt of the pre-pass
 ```
 
@@ -215,9 +217,10 @@ change there has to be mirrored in the direct mode (and vice versa) to keep them
   all skip the backend). Task sessions / `Settings → AI` task lists still come from Folo.
 - **A wide summary runs a pre-pass**: the first "summarize today" over ~100 matched
   articles answers a few articles per call before the answer starts, so the first tokens take
-  noticeably longer (the log prints `reduce: …` when it finishes, and the notes are cached for the
-  rest of the process, so repeating the same summary is immediate). Closing the chat window stops
-  the work; the Stop button takes effect once the answer stream has opened.
+  noticeably longer (the log prints `reduce: …` when it finishes, and the panel shows how far it
+  is). The notes are cached per article, model and language — in memory and, both here and in the
+  app, in a file — so summarizing the same day again, even after a restart, is immediate. Closing
+  the chat window stops the work; the Stop button takes effect once the answer stream has opened.
 - Both the plan gate for BYOK and AI quota live on Folo's servers; the local path bypasses them for
   the three endpoints above. Review your own situation before using this with a Folo account you
   care about — see the project README and Folo's Terms of Service.

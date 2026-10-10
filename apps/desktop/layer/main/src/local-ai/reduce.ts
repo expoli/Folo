@@ -23,6 +23,11 @@ export const REDUCE_BATCH_ENTRIES = 8
 export const REDUCE_BATCH_CHARS = 16_000
 /** Articles summarized at the same time; the batch-concurrency setting overrides it. */
 export const REDUCE_CONCURRENCY = 3
+/**
+ * Bumped whenever the batch prompt changes: notes written for an older wording (or an older kind
+ * of note) must not be served from the cache as if they were written for this one.
+ */
+export const REDUCE_PROMPT_VERSION = 1
 
 export interface ReduceEntry {
   /** 1-based position in the prompt, so a note can be attributed back to its article. */
@@ -165,11 +170,13 @@ export const summarizeEntries = async (params: {
   modelId?: string
   log?: (line: string) => void
   signal?: AbortSignal
+  /** Called after every batch, so a long pre-pass can report how far it is. */
+  onProgress?: (done: number, total: number) => void
 }): Promise<ReduceResult> => {
-  const { model, entries, language, call, cache, modelId = "", log, signal } = params
+  const { model, entries, language, call, cache, modelId = "", log, signal, onProgress } = params
   const notes = new Map<number, string>()
   const keyOf = (entry: ReduceEntry) =>
-    `${modelId}|${language ?? ""}|${entry.title ?? ""}|${textHash(entry.body)}`
+    `v${REDUCE_PROMPT_VERSION}|${modelId}|${language ?? ""}|${entry.title ?? ""}|${textHash(entry.body)}`
 
   const pending: ReduceEntry[] = []
   for (const entry of entries.slice(0, REDUCE_MAX_ENTRIES)) {
@@ -187,6 +194,10 @@ export const summarizeEntries = async (params: {
   let cursor = 0
   let calls = 0
   let failed = 0
+
+  // Report what the cache already answered before the first batch, so a fully cached pre-pass still
+  // tells the client where it stands.
+  onProgress?.(notes.size, Math.min(entries.length, REDUCE_MAX_ENTRIES))
 
   const worker = async () => {
     for (;;) {
@@ -232,6 +243,8 @@ export const summarizeEntries = async (params: {
               `note${preview ? ` — the reply was “${preview}”` : " (the reply was empty)"}`,
           )
         }
+
+        onProgress?.(notes.size, Math.min(entries.length, REDUCE_MAX_ENTRIES))
       } catch (error) {
         // One unusable call must not lose the rest: those articles stay listed by title, and the
         // coverage note names them as such.

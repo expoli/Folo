@@ -490,6 +490,42 @@ describe("routeLocalAIRequest", () => {
     expect(system?.content).not.toContain("(no text attached)")
   })
 
+  test("reports how far the pre-pass is instead of staying quiet", async () => {
+    stubUpstream((call) =>
+      call.body?.stream ? sseStream("Summary") : completion('{"1": "A note"}'),
+    )
+
+    const response = await route({
+      path: "/ai/chat",
+      body: JSON.stringify({
+        messages: [{ role: "user", parts: [{ type: "text", text: "Summarize today" }] }],
+        localAIContext: {
+          coverage: { matched: 1, window: "last 24 hours" },
+          entries: [{ title: "Progress probe", body: "Text of the article" }],
+        },
+      }),
+    })
+
+    const body = await response.text()
+    expect(body).toContain("data-reduce-progress")
+    expect(body).toContain('"done":1')
+    expect(body).toContain("Summary")
+
+    // The second run is answered from the cache; it must still report the pre-pass as covered.
+    const cached = await route({
+      path: "/ai/chat",
+      body: JSON.stringify({
+        messages: [{ role: "user", parts: [{ type: "text", text: "Summarize today" }] }],
+        localAIContext: {
+          coverage: { matched: 1, window: "last 24 hours" },
+          entries: [{ title: "Progress probe", body: "Text of the article" }],
+        },
+      }),
+    })
+
+    expect(await cached.text()).toContain("data-reduce-progress")
+  })
+
   test("reuses the notes of an earlier summary", async () => {
     const calls = stubUpstream((call) =>
       call.body?.stream ? sseStream("Again") : completion('{"1": "A cached note"}'),
