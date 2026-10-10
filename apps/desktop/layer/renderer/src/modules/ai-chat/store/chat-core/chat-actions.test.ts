@@ -236,6 +236,73 @@ describe("ChatSliceActions.sendMessage with the recommend-feeds shortcut", () =>
     )
   })
 
+  test("detects the shortcut from the editor state when the id carries no prefix", async () => {
+    configureLocalAI({ baseUrl: "http://127.0.0.1:8788" })
+    const store = createAIChatStore()
+    store.setState({ chatId: "chat-feeds-state", isLocal: true })
+    const sendMock = vi
+      .spyOn(store.getState().chatInstance, "sendMessage")
+      .mockResolvedValue(undefined)
+
+    const state = JSON.stringify({
+      root: {
+        children: [
+          {
+            children: [
+              { shortcutData: { id: "default-recommend-feeds" }, type: "shortcut", version: 1 },
+            ],
+            type: "paragraph",
+            version: 1,
+          },
+        ],
+        type: "root",
+        version: 1,
+      },
+    })
+
+    await store.getState().chatActions.sendMessage({
+      ...createMessage("message-without-prefix", "user"),
+      parts: [{ type: "data-rich-text", data: { state, text: "pick 5 feeds" } }],
+    } as BizUIMessage)
+
+    expect(getFeedsMock).toHaveBeenCalledTimes(1)
+    expect(sendMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        body: expect.objectContaining({
+          localAIContext: expect.objectContaining({
+            feeds: [expect.objectContaining({ id: "feed-1" })],
+          }),
+        }),
+      }),
+    )
+  })
+
+  test("keeps the catalogue attached on the follow-up turns", async () => {
+    configureLocalAI({ baseUrl: "http://127.0.0.1:8788" })
+    const store = createAIChatStore()
+    store.setState({ chatId: "chat-feeds-followup", isLocal: true })
+    const sendMock = vi
+      .spyOn(store.getState().chatInstance, "sendMessage")
+      .mockResolvedValue(undefined)
+    store.getState().chatInstance.chatState.messages = [
+      createMessage("default-recommend-feeds-message-3", "user"),
+    ]
+
+    await store.getState().chatActions.sendMessage(createMessage("user-answer", "user"))
+
+    expect(sendMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        body: expect.objectContaining({
+          localAIContext: expect.objectContaining({
+            feeds: [expect.objectContaining({ id: "feed-1" })],
+          }),
+        }),
+      }),
+    )
+  })
+
   test("does not call Folo for a catalogue without a gateway", async () => {
     const store = createAIChatStore()
     store.setState({ chatId: "chat-feeds-off", isLocal: true })

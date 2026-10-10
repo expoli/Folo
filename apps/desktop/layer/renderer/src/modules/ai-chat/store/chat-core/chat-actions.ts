@@ -21,20 +21,14 @@ import type { ChatSlice } from "./types"
 
 const FEED_CANDIDATE_LIMIT = 40
 const FEED_CANDIDATE_TTL = 10 * 60 * 1000
+const FEED_CANDIDATE_CACHE_LIMIT = 20
 
 /** Fetched per chat: the "recommend feeds" flow keeps asking on later turns. */
 const feedCandidateCache = new Map<string, { at: number; feeds: LocalAIFeedCandidate[] }>()
 
-/** Folo's "Recommend feeds" shortcut expects the server to supply the catalogue to pick from. */
-const usesFeedRecommendation = (message: { id?: string; parts?: BizUIMessage["parts"] }) => {
-  if (message.id?.startsWith(`${DEFAULT_RECOMMEND_FEEDS_SHORTCUT_ID}-`)) return true
-  if (!Array.isArray(message.parts)) return false
-
-  return (
-    extractShortcutIdFromMessageParts(message.parts as SendingUIMessage["parts"]) ===
-    DEFAULT_RECOMMEND_FEEDS_SHORTCUT_ID
-  )
-}
+/** Messages created from a shortcut carry its id as a prefix, which is cheap to check. */
+const hasFeedRecommendationShortcutId = (message: { id?: string }) =>
+  message.id?.startsWith(`${DEFAULT_RECOMMEND_FEEDS_SHORTCUT_ID}-`) ?? false
 
 const asText = (value: unknown) => (typeof value === "string" && value.trim() ? value : null)
 
@@ -55,6 +49,12 @@ const loadFeedCandidates = async (chatId: string): Promise<LocalAIFeedCandidate[
       .slice(0, FEED_CANDIDATE_LIMIT)
 
     feedCandidateCache.set(chatId, { at: Date.now(), feeds })
+    // Drop the oldest chats first: `Map` keeps insertion order.
+    for (const key of feedCandidateCache.keys()) {
+      if (feedCandidateCache.size <= FEED_CANDIDATE_CACHE_LIMIT) break
+      feedCandidateCache.delete(key)
+    }
+
     return feeds
   } catch (error) {
     console.warn(
@@ -326,8 +326,14 @@ export class ChatSliceActions {
     if (!isLocalAIEnabled()) return null
 
     const question = localAIContextQuestion(message.parts)
-    // The catalogue has to stay attached for the follow-up turns of that conversation too.
-    const needsFeedCandidates = [...this.getMessages(), message].some(usesFeedRecommendation)
+    // The catalogue has to stay attached for the follow-up turns of that conversation too, so the
+    // whole conversation is checked — by id prefix, which costs nothing; the editor state is only
+    // parsed for the message being sent.
+    const needsFeedCandidates =
+      hasFeedRecommendationShortcutId(message) ||
+      this.getMessages().some(hasFeedRecommendationShortcutId) ||
+      extractShortcutIdFromMessageParts(message.parts as SendingUIMessage["parts"]) ===
+        DEFAULT_RECOMMEND_FEEDS_SHORTCUT_ID
     const feedCandidates = needsFeedCandidates
       ? await loadFeedCandidates(this.get().chatId)
       : undefined

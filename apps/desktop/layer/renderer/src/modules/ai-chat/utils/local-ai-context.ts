@@ -75,7 +75,7 @@ const truncateText = (text: string, limit: number) => {
 const MENTION_DATE_TAG = /<mention-date\b([^>]*)>/gi
 
 const readAttribute = (attributes: string, name: string) =>
-  new RegExp(`${name}="([^"]*)"`, "i").exec(attributes)?.[1]
+  new RegExp(`(?:^|\\s)${name}="([^"]*)"`, "i").exec(attributes)?.[1]
 
 const normalizeRelativeHint = (hint: string) =>
   hint
@@ -171,16 +171,23 @@ export const parseMentionDateWindow = (
       const start = dayjs(startIso)
       const end = dayjs(endIso)
       if (start.isValid() && end.isValid()) {
-        // A midnight end is exclusive: the mention covers the day before it.
-        const inclusiveEnd =
+        // A midnight end is exclusive — the mention covers the day before it — except when start
+        // and end are the same instant: the menu's single-day presets ("yesterday") serialise that
+        // way, and there the mention means that whole day.
+        const isMidnightEnd =
           end.hour() === 0 && end.minute() === 0 && end.second() === 0 && end.millisecond() === 0
+        const inclusiveEnd = isMidnightEnd
+          ? end.isAfter(start)
             ? end.subtract(1, "millisecond")
-            : end
+            : end.endOf("day")
+          : end
 
         return {
           start,
           end: inclusiveEnd,
-          label: `${start.format("YYYY-MM-DD")} – ${end.format("YYYY-MM-DD")}`,
+          label: start.isSame(inclusiveEnd, "day")
+            ? start.format("YYYY-MM-DD")
+            : `${start.format("YYYY-MM-DD")} – ${inclusiveEnd.format("YYYY-MM-DD")}`,
         }
       }
     }

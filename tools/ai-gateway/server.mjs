@@ -264,7 +264,7 @@ const formatLocalContext = (context) => {
     })
     .join("\n\n")
 
-  return [
+  const header = [
     contextEntries.length > 0
       ? "The user is currently looking at the following entries in Folo."
       : "",
@@ -272,11 +272,13 @@ const formatLocalContext = (context) => {
       ? "Candidate feeds the user could subscribe to (pick only from this list):"
       : "",
     blocks ? `Context selection: ${blocks}` : "",
-    entries,
-    feedSection,
   ]
-    .filter((line) => line !== "")
+    .filter(Boolean)
     .join("\n")
+
+  const body = [entries, feedSection].filter(Boolean).join("\n\n")
+
+  return [header, body].filter(Boolean).join("\n\n")
 }
 
 /** Strips a ```json … ``` fence without a backtracking-prone regex. */

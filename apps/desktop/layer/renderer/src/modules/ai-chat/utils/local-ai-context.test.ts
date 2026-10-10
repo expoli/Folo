@@ -286,6 +286,44 @@ describe("implicit timeline context", () => {
     }
   })
 
+  test("covers the whole day for a single-day mention (the menu's yesterday preset)", () => {
+    // The preset serialises start == end == that day at local midnight, which must not come out as
+    // an inverted window (it used to attach nothing at all).
+    const yesterdayStart = now.startOf("day").subtract(1, "day")
+    const mention = `<mention-date start="${yesterdayStart.format()}" end="${yesterdayStart.format()}" text="date:relative:yesterday"></mention-date>`
+
+    setEntries([
+      createEntry("yesterday-morning", { publishedAt: yesterdayStart.add(9, "hour").toDate() }),
+      createEntry("yesterday-night", { publishedAt: yesterdayStart.add(23, "hour").toDate() }),
+      createEntry("today", { publishedAt: now.subtract(1, "hour").toDate() }),
+    ])
+
+    const context = buildLocalAIContext([questionPart(mention)], { now })
+
+    expect(context?.entries.map((entry) => entry.id)).toEqual([
+      "yesterday-night",
+      "yesterday-morning",
+    ])
+    expect(context?.blocks).toEqual([
+      { type: "timeline", value: yesterdayStart.format("YYYY-MM-DD") },
+    ])
+  })
+
+  test("keeps a midnight end exclusive and drops the boundary entry", () => {
+    const dayStart = now.startOf("day").subtract(1, "day")
+    const nextDayStart = now.startOf("day")
+    const mention = `<mention-date start="${dayStart.format()}" end="${nextDayStart.format()}" text="custom"></mention-date>`
+
+    setEntries([
+      createEntry("late", { publishedAt: dayStart.add(23, "hour").add(30, "minute").toDate() }),
+      createEntry("boundary", { publishedAt: nextDayStart.toDate() }),
+    ])
+
+    const context = buildLocalAIContext([questionPart(mention)], { now })
+
+    expect(context?.entries.map((entry) => entry.id)).toEqual(["late"])
+  })
+
   test("stays empty without a date mention or without entries in the window", () => {
     setEntries([createEntry("old", { publishedAt: new Date("2025-01-01T09:00:00.000Z") })])
 
