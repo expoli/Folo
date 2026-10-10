@@ -37,13 +37,25 @@ export const useLocalAIConfig = () => useAtomValue(effectiveLocalAIConfigAtom, a
 /**
  * Saved settings with every field defined: a stored object may predate a field (the settings atom
  * merges shallowly), so readers must never see `undefined` where a string is expected.
+ *
+ * The result is memoised per stored object, because React consumers use it as an effect dependency:
+ * a fresh object on every render would make their draft-sync effect revert the user's typing.
  */
+const normalizedSettingsCache = new WeakMap<object, LocalAIGatewaySettings>()
+
 export const normalizeLocalGatewaySettings = (
   stored?: Partial<LocalAIGatewaySettings> | null,
-): LocalAIGatewaySettings => ({
-  ...createDefaultSettings().localGateway,
-  ...stored,
-})
+): LocalAIGatewaySettings => {
+  if (!stored) return createDefaultSettings().localGateway
+
+  const cached = normalizedSettingsCache.get(stored)
+  if (cached) return cached
+
+  const normalized = { ...createDefaultSettings().localGateway, ...stored }
+  normalizedSettingsCache.set(stored, normalized)
+
+  return normalized
+}
 
 /** Saved local AI settings; settings stored before a field existed fall back to its default, so a
  * legacy object without `mode` / `directModels` still resolves. */

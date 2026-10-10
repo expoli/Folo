@@ -9,7 +9,7 @@ import { LOCAL_AI_DIRECT_ORIGIN } from "@follow/shared/settings/local-ai"
 import { probeLocalAIGateway } from "@follow/store/ai-local/client"
 import { cn } from "@follow/utils/utils"
 import { isEqual } from "es-toolkit"
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 
 import { setAISetting, useAISettingValue } from "~/atoms/settings/ai"
@@ -74,7 +74,9 @@ const ProbeResultLine = ({ result }: { result: LocalAIProbeResult | null }) => {
  */
 export const LocalGatewaySection = () => {
   const { t } = useTranslation("ai")
-  const settings = normalizeLocalGatewaySettings(useAISettingValue().localGateway)
+  const storedSettings = useAISettingValue().localGateway
+  // Memoised so the draft-sync effect below only runs when the saved settings really change.
+  const settings = useMemo(() => normalizeLocalGatewaySettings(storedSettings), [storedSettings])
 
   const [draft, setDraft] = useState(settings)
   const [showToken, setShowToken] = useState(false)

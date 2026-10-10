@@ -127,6 +127,17 @@ describe("local AI gateway wiring", () => {
     })
   })
 
+  test("returns the same object for the same stored settings", () => {
+    // React consumers use the result as an effect dependency: a fresh object per call made their
+    // draft-sync effect revert what the user was typing or pasting.
+    const stored = {
+      enabled: true,
+      baseUrl: "http://127.0.0.1:8788",
+    } as unknown as LocalAIGatewaySettings
+
+    expect(normalizeLocalGatewaySettings(stored)).toBe(normalizeLocalGatewaySettings(stored))
+  })
+
   test("fills the fields an object stored by an older version predates", () => {
     // The settings atom merges shallowly, so a saved object keeps its own shape and a field added
     // later is missing until it is normalised — reading `.trim()` on it used to crash the renderer.
