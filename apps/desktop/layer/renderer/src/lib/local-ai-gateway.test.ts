@@ -24,7 +24,9 @@ import type { BizUIMessage } from "~/modules/ai-chat/store/types"
 import {
   applyLocalAIGatewaySettings,
   getDirectAIConfig,
+  getLocalGatewaySettings,
   importLocalAIConfigFromByok,
+  normalizeLocalGatewaySettings,
   subscribeLocalAIGatewaySettings,
 } from "./local-ai-gateway"
 
@@ -123,6 +125,31 @@ describe("local AI gateway wiring", () => {
       token: "token-1",
       mode: "gateway",
     })
+  })
+
+  test("fills the fields an object stored by an older version predates", () => {
+    // The settings atom merges shallowly, so a saved object keeps its own shape and a field added
+    // later is missing until it is normalised — reading `.trim()` on it used to crash the renderer.
+    jotaiStore.set(__aiSettingAtom, {
+      ...getAISettings(),
+      localGateway: {
+        enabled: true,
+        baseUrl: "http://127.0.0.1:8788",
+      } as unknown as LocalAIGatewaySettings,
+    } as WebAISettings)
+
+    const raw = getAISettings().localGateway
+    // The stored object really is incomplete — this is what the settings section used to read.
+    expect(raw.token).toBeUndefined()
+
+    const normalized = normalizeLocalGatewaySettings(raw)
+    expect(normalized).toMatchObject({ enabled: true, baseUrl: "http://127.0.0.1:8788" })
+    expect(typeof normalized.token).toBe("string")
+    expect(typeof normalized.directBaseUrl).toBe("string")
+    expect(typeof normalized.directModel).toBe("string")
+    expect(Array.isArray(normalized.directModels)).toBe(true)
+    expect(() => getDirectAIConfig(getLocalGatewaySettings())).not.toThrow()
+    expect(applyLocalAIGatewaySettings()).toMatchObject({ mode: "gateway" })
   })
 
   test("falls back to the build-time address for settings stored before the gateway existed", () => {

@@ -64,7 +64,7 @@ export const DirectModeFields = ({
     setModels((current) => mergeModels(current, settings.directModels ?? EMPTY_MODELS))
   }, [settings.directModels])
 
-  const saveBaseUrl = () => save({ directBaseUrl: settings.directBaseUrl.trim() })
+  const saveBaseUrl = () => save({ directBaseUrl: (settings.directBaseUrl ?? "").trim() })
 
   const saveApiKey = async () => {
     setSavingKey(true)
@@ -138,7 +138,7 @@ export const DirectModeFields = ({
     try {
       const fetched = await services.localAI.listModels({
         config: {
-          baseUrl: settings.directBaseUrl.trim(),
+          baseUrl: (settings.directBaseUrl ?? "").trim(),
           model: settings.directModel,
           models: selectedModels,
         },
@@ -285,7 +285,7 @@ export const DirectModeFields = ({
               variant="outline"
               size="sm"
               isLoading={fetchingModels}
-              disabled={!settings.directBaseUrl.trim()}
+              disabled={!(settings.directBaseUrl ?? "").trim()}
               onClick={fetchModels}
             >
               {t("settings.localGateway.direct.models.fetch")}

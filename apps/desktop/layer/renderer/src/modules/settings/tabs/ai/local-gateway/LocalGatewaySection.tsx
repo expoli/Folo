@@ -15,19 +15,9 @@ import { useTranslation } from "react-i18next"
 import { setAISetting, useAISettingValue } from "~/atoms/settings/ai"
 import { ipcServices } from "~/lib/client"
 import { createLocalAIDirectFetch } from "~/lib/local-ai-direct-fetch"
-import { getDirectAIConfig } from "~/lib/local-ai-gateway"
+import { getDirectAIConfig, normalizeLocalGatewaySettings } from "~/lib/local-ai-gateway"
 
 import { DirectModeFields } from "./DirectModeFields"
-
-const FALLBACK_GATEWAY_SETTINGS: LocalAIGatewaySettings = {
-  enabled: false,
-  mode: "gateway",
-  baseUrl: "",
-  token: "",
-  directBaseUrl: "",
-  directModel: "",
-  directModels: [],
-}
 
 const ProbeResultLine = ({ result }: { result: LocalAIProbeResult | null }) => {
   const { t } = useTranslation("ai")
@@ -84,7 +74,7 @@ const ProbeResultLine = ({ result }: { result: LocalAIProbeResult | null }) => {
  */
 export const LocalGatewaySection = () => {
   const { t } = useTranslation("ai")
-  const settings = useAISettingValue().localGateway ?? FALLBACK_GATEWAY_SETTINGS
+  const settings = normalizeLocalGatewaySettings(useAISettingValue().localGateway)
 
   const [draft, setDraft] = useState(settings)
   const [showToken, setShowToken] = useState(false)
@@ -167,11 +157,13 @@ export const LocalGatewaySection = () => {
     setProbeResult(result)
   }
 
-  const saveBaseUrl = () => save({ baseUrl: draft.baseUrl.trim() })
-  const saveToken = () => save({ token: draft.token.trim() })
+  const saveBaseUrl = () => save({ baseUrl: (draft.baseUrl ?? "").trim() })
+  const saveToken = () => save({ token: (draft.token ?? "").trim() })
 
   const isDirect = draft.mode === "direct"
-  const canTest = isDirect ? Boolean(draft.directBaseUrl.trim()) : Boolean(draft.baseUrl.trim())
+  const canTest = isDirect
+    ? Boolean((draft.directBaseUrl ?? "").trim())
+    : Boolean((draft.baseUrl ?? "").trim())
 
   return (
     <div className="space-y-4">

@@ -35,13 +35,20 @@ const atomOptions = { store: jotaiStore }
 export const useLocalAIConfig = () => useAtomValue(effectiveLocalAIConfigAtom, atomOptions)
 
 /**
- * Saved local AI settings; settings stored before a field existed fall back to its default, so a
- * legacy object without `mode` / `directModels` still resolves.
+ * Saved settings with every field defined: a stored object may predate a field (the settings atom
+ * merges shallowly), so readers must never see `undefined` where a string is expected.
  */
-export const getLocalGatewaySettings = (): LocalAIGatewaySettings => ({
+export const normalizeLocalGatewaySettings = (
+  stored?: Partial<LocalAIGatewaySettings> | null,
+): LocalAIGatewaySettings => ({
   ...createDefaultSettings().localGateway,
-  ...getAISettings().localGateway,
+  ...stored,
 })
+
+/** Saved local AI settings; settings stored before a field existed fall back to its default, so a
+ * legacy object without `mode` / `directModels` still resolves. */
+export const getLocalGatewaySettings = (): LocalAIGatewaySettings =>
+  normalizeLocalGatewaySettings(getAISettings().localGateway)
 
 /** Endpoint the direct mode talks to, or `null` while the user has not filled the address in. */
 export const getDirectAIConfig = (
