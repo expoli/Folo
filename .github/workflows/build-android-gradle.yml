@@ -1,0 +1,153 @@
+name: 🤖 Build Android APK (gradle)
+
+# Builds an installable APK without EAS: `expo prebuild` generates the native project and gradle
+# bundles the JavaScript into it, so no Expo account, project id or keystore secret is involved.
+# The release variant is signed with the debug keystore that the React Native template ships, which
+# is enough to sideload the app for testing; a distributed or store build needs a real keystore and
+# belongs to upstream's EAS workflow instead.
+#
+# The APK is attached to a **prerelease** tagged `android/latest`, both on purpose:
+#   - a prerelease is invisible to `releases/latest`, which the desktop app reads for its updates
+#   - the slash in the tag keeps electron-updater's release feed regex from matching it at all
+# so publishing an APK here cannot move the desktop update channel.
+#
+# A debug APK would need a running Metro server; this one is a standalone release build.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: build-android-gradle
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  NODE_OPTIONS: --max-old-space-size=8192
+  # Icons, splash and the version suffix of this build (`app.config.base.ts` falls back to this too).
+  PROFILE: production
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    # Android builds are long, and the default six hour timeout would hide a hang
+    timeout-minutes: 90
+    steps:
+      # An Android build needs far more than the runner's free space
+      - name: Claim disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/.ghcup
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/share/swift
+          sudo rm -rf /usr/local/julia*
+          df -h /
+
+      - name: Check out the repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Use Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          java-version: "17"
+          distribution: "zulu"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          # The action's default also installs the obsolete `tools` package, which the SDK
+          # repository no longer serves, so sdkmanager exits with an error.
+          packages: platform-tools
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --child-concurrency=1
+
+      # The app ships the html renderer as an asset bundle: `app.config.base.ts` points at
+      # `out/rn-web`, so it has to exist before the native project is generated.
+      - name: Build the mobile web assets
+        run: pnpm --dir apps/mobile/web-app build --outDir "${{ github.workspace }}/out/rn-web/html-renderer"
+
+      - name: Generate the Android project
+        working-directory: apps/mobile
+        run: pnpm exec expo prebuild --platform android --clean --no-install
+
+      - name: Build the APK
+        working-directory: apps/mobile/android
+        run: |
+          chmod +x ./gradlew
+          # The release variant is signed with the template's debug keystore (see app/build.gradle),
+          # and `gradle.properties` already gives the build 4 GB of heap.
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Check the APK
+        id: apk
+        working-directory: apps/mobile
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          source="android/app/build/outputs/apk/release/app-release.apk"
+
+          if [ ! -f "$source" ]; then
+            echo "::error::gradle did not produce $source"
+            exit 1
+          fi
+
+          size="$(stat -c%s "$source")"
+          echo "APK: $source ($size bytes)"
+          # an empty or stub APK means the packaging step failed silently
+          if [ "$size" -lt 20000000 ]; then
+            echo "::error::the APK is only $size bytes, which is too small to be a real build"
+            exit 1
+          fi
+
+          name="Folo-${version}-android.apk"
+          cp "$source" "$name"
+          sha256sum "$name"
+
+          {
+            echo "name=${name}"
+            echo "size=${size}"
+            echo "version=${version}"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Android APK"
+            echo
+            echo "- version: \`${version}\`"
+            echo "- commit: \`$GITHUB_SHA\`"
+            echo "- apk: \`${name}\` ($((size / 1024 / 1024)) MiB)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the APK artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-apk
+          path: apps/mobile/${{ steps.apk.outputs.name }}
+          if-no-files-found: error
+          retention-days: 30
+
+      # A release asset is the only download that works from a phone without a GitHub login.
+      - name: Publish the APK on a prerelease
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: android/latest
+          name: Android APK (latest build)
+          body: |
+            Standalone release APK of the mobile app, signed with the debug keystore for sideloading.
+
+            - version: `${{ steps.apk.outputs.version }}`
+            - commit: `${{ github.sha }}`
+          draft: false
+          prerelease: true
+          files: apps/mobile/${{ steps.apk.outputs.name }}
