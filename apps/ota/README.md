@@ -209,7 +209,7 @@ Run these from the repository root:
 ```bash
 pnpm --filter @follow/ota test
 pnpm --filter @follow/ota typecheck
-pnpm --dir apps/desktop/layer/main exec vitest run src/updater/api.test.ts src/updater/index.test.ts
+pnpm --dir apps/desktop/layer/main exec vitest run src/updater/index.test.ts
 pnpm --dir apps/desktop/layer/main typecheck
 pnpm --filter @follow/mobile exec vitest run src/modules/ota/__tests__/client.test.ts src/modules/ota/__tests__/store.test.ts src/modules/ota/__tests__/provider.test.ts
 pnpm --filter @follow/mobile typecheck

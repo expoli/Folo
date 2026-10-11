@@ -58,6 +58,44 @@ Installing the deb version over an older one needs `--reinstall`:
 sudo dpkg -i --reinstall apps/desktop/out/make/deb/x64/Folo-1.15.0-linux-x64.deb
 ```
 
+## Releases and updates
+
+The app updates itself from this fork's own GitHub releases, not from Folo's OTA service:
+`electron-updater` runs with the built-in GitHub provider and reads owner/repo from
+`apps/desktop/layer/main/src/constants/app.ts`. The renderer hot update and its `/manifest` +
+`/policy` endpoints are not part of this fork any more, and the feed is the plain
+`latest*.yml` channel file that `electron-forge make` writes next to the installers.
+
+`.github/workflows/release-desktop.yml` builds Linux, macOS and Windows and publishes them as one
+release. Run it from the Actions tab (the fork needs its workflows enabled once — Actions tab,
+“I understand my workflows, go ahead and enable them”; upstream's `build-*` workflows can be
+disabled there too, they need secrets this fork does not have):
+
+1. Bump `version` in `apps/desktop/package.json`. An installed build only offers an update when the
+   release version is _higher_, so keep the versions increasing: `releases/latest` is the entry point
+   of the feed, and the workflow refuses a version whose tag already exists (as a release or as a
+   leftover draft).
+2. Optionally add `apps/desktop/changelog/<version>.md`; it becomes the release notes.
+3. Run “🚀 Release Desktop”. The tag is `v<version>`, not upstream's `desktop/v<version>`:
+   electron-updater matches releases against the `releases.atom` entries with `/\/tag\/(v?[^/]+)$/`,
+   which a tag containing a slash never matches, and the prerelease channel path additionally needs a
+   semver tag. The version comparison itself reads the `version` inside `latest*.yml`, and the stable
+   channel takes the tag from `releases/latest` whatever its shape — so the plain tag is a convention
+   the tooling around it relies on, not something `releases/latest` enforces.
+
+An installed build checks every 15 minutes (`checkUpdateInterval`). The AppImage and the Windows
+installer download and install the update themselves and then ask for a restart; the `.deb` package
+and the unsigned macOS bundle get the notice that opens the release page instead, because neither
+can be replaced while running (the `.deb` has no `package-type` marker for electron-updater to pick a
+Deb updater with, and Squirrel.Mac requires a signed bundle):
+
+```bash
+sudo dpkg -i --reinstall Folo-<version>-linux-x64.deb
+```
+
+If the packaging step hangs on a runner the way it does on this machine, the workaround noted above
+belongs in the repository as a pnpm patch (`patchedDependencies`), not in `node_modules`.
+
 ## When the running app looks broken
 
 - `nss_util.cc:377 … NSS error code: -8018` and `auth.fetchWithAuth: net::ERR_TIMED_OUT` are about

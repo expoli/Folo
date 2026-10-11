@@ -24,6 +24,10 @@ const isMicrosoftStore =
 
 const isStaging = mode === "staging"
 
+// macOS builds of this fork are unsigned: they only get a signing identity when the environment
+// provides one, which is also what tells electron-packager to sign at all.
+const osxSignIdentity = process.env.OSX_SIGN_IDENTITY
+
 const artifactRegex = /.*\.(?:exe|dmg|AppImage|zip|deb)$/
 const platformNamesMap = {
   darwin: "macos",
@@ -170,25 +174,29 @@ const config: ForgeConfig = {
     extendInfo: {
       ITSAppUsesNonExemptEncryption: false,
     },
-    osxSign: {
-      optionsForFile:
-        platform === "mas"
-          ? (filePath) => {
-              const entitlements = filePath.includes(".app/")
-                ? "build/entitlements.mas.child.plist"
-                : "build/entitlements.mas.plist"
-              return {
-                hardenedRuntime: false,
-                entitlements,
-              }
-            }
-          : () => ({
-              entitlements: "build/entitlements.mac.plist",
-            }),
-      keychain: process.env.OSX_SIGN_KEYCHAIN_PATH,
-      identity: process.env.OSX_SIGN_IDENTITY,
-      provisioningProfile: process.env.OSX_SIGN_PROVISIONING_PROFILE_PATH,
-    },
+    ...(osxSignIdentity
+      ? {
+          osxSign: {
+            optionsForFile:
+              platform === "mas"
+                ? (filePath) => {
+                    const entitlements = filePath.includes(".app/")
+                      ? "build/entitlements.mas.child.plist"
+                      : "build/entitlements.mas.plist"
+                    return {
+                      hardenedRuntime: false,
+                      entitlements,
+                    }
+                  }
+                : () => ({
+                    entitlements: "build/entitlements.mac.plist",
+                  }),
+            keychain: process.env.OSX_SIGN_KEYCHAIN_PATH,
+            identity: osxSignIdentity,
+            provisioningProfile: process.env.OSX_SIGN_PROVISIONING_PROFILE_PATH,
+          },
+        }
+      : {}),
     ...(process.env.APPLE_ID &&
       process.env.APPLE_PASSWORD &&
       process.env.APPLE_TEAM_ID && {
@@ -313,8 +321,8 @@ const config: ForgeConfig = {
       name: "@electron-forge/publisher-github",
       config: {
         repository: {
-          owner: "RSSNext",
-          name: "follow",
+          owner: process.env.GITHUB_OWNER || "expoli",
+          name: process.env.GITHUB_REPO || "Folo",
         },
         draft: true,
       },

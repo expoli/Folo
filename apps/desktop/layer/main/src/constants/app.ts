@@ -5,8 +5,9 @@ export const UNREAD_BACKGROUND_POLLING_INTERVAL = 1000 * 60 * 5
 
 export const HOTUPDATE_RENDER_ENTRY_DIR = path.resolve(app.getPath("userData"), "render")
 
-export const GITHUB_OWNER = process.env.GITHUB_OWNER || "RSSNext"
-export const GITHUB_REPO = process.env.GITHUB_REPO || "follow"
+// Where the app updates itself from: the fork's own releases, not Folo's OTA service.
+export const GITHUB_OWNER = process.env.GITHUB_OWNER || "expoli"
+export const GITHUB_REPO = process.env.GITHUB_REPO || "Folo"
 
 // Shared with the renderer, which registers it as the login item argument
 export { START_IN_TRAY_ARGS } from "@follow/shared/desktop-launch"

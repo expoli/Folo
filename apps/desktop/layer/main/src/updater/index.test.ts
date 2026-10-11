@@ -1,18 +1,28 @@
-import { describe, expect, it, vi } from "vitest"
+import type { AppUpdater } from "electron-updater"
+import { afterEach, describe, expect, it, vi } from "vitest"
+
+const mocks = vi.hoisted(() => ({
+  distributionUpdateAvailable: vi.fn(),
+  updateDownloaded: vi.fn(),
+  mainWindow: { id: 1 },
+}))
 
 vi.mock("@follow/shared/bridge", () => ({
   callWindowExpose: () => ({
-    distributionUpdateAvailable: vi.fn(),
-    updateDownloaded: vi.fn(),
+    distributionUpdateAvailable: mocks.distributionUpdateAvailable,
+    updateDownloaded: mocks.updateDownloaded,
   }),
 }))
 
-vi.mock("@follow/shared/constants", () => ({
-  DEV: false,
+vi.mock("@pkg", () => ({
+  version: "1.15.0",
 }))
 
-vi.mock("@pkg", () => ({
-  version: "1.5.0",
+vi.mock("electron", () => ({
+  app: {
+    isPackaged: true,
+    getPath: () => "/tmp",
+  },
 }))
 
 vi.mock("electron-log", () => ({
@@ -37,28 +47,17 @@ vi.mock("../env", () => ({
   isWindows: false,
 }))
 
-vi.mock("./api", () => ({
-  fetchDesktopManifest: vi.fn(),
-  fetchDesktopPolicy: vi.fn(),
-  getDesktopRuntimeVersion: () => "1.5.0",
-}))
-
 vi.mock("./configs", () => ({
   appUpdaterConfig: {
-    enableRenderHotUpdate: true,
+    enableRenderHotUpdate: false,
     enableCoreUpdate: true,
     enableAppUpdate: true,
-    enableDistributionStoreUpdate: false,
     app: {
       autoCheckUpdate: false,
-      autoDownloadUpdate: false,
-      checkUpdateInterval: 900000,
+      autoDownloadUpdate: true,
+      checkUpdateInterval: 900_000,
     },
   },
-}))
-
-vi.mock("./follow-update-provider", () => ({
-  FollowUpdateProvider: class {},
 }))
 
 vi.mock("./windows-updater", () => ({
@@ -67,122 +66,92 @@ vi.mock("./windows-updater", () => ({
 
 vi.mock("~/manager/window", () => ({
   WindowManager: {
-    getMainWindow: () => null,
+    getMainWindow: () => mocks.mainWindow,
     destroyMainWindow: vi.fn(),
   },
 }))
 
-vi.mock("~/updater/hot-updater", () => ({
-  rendererUpdater: {},
-  RendererEligibilityStatus: {
-    NoManifest: 0,
-    RequiresFullAppUpdate: 1,
-    AlreadyCurrent: 2,
-    Eligible: 3,
-  },
-}))
+const { FollowUpdater, canSelfUpdate, getReleasePageUrl } = await import("./index")
 
-describe("finalizeDirectUpdateResult", () => {
-  it("prefers a successful renderer update result", async () => {
-    const { finalizeDirectUpdateResult } = await import("./index")
+const createUpdater = (input: { isUpdateAvailable: boolean; tag?: string }) => {
+  const updateInfo = { version: "1.16.0", ...(input.tag ? { tag: input.tag } : {}) }
+  const autoUpdater = {
+    checkForUpdates: vi.fn(async () => ({
+      isUpdateAvailable: input.isUpdateAvailable,
+      updateInfo,
+    })),
+  }
 
-    expect(
-      finalizeDirectUpdateResult({
-        rendererResult: { hasUpdate: true },
-        appResult: { hasUpdate: false },
-        policy: {
-          action: "none",
-          targetVersion: null,
-          message: null,
-          distribution: "direct",
-          downloadUrl: null,
-          storeUrl: null,
-          publishedAt: null,
-        },
-      }),
-    ).toEqual({ hasUpdate: true })
+  return {
+    updater: new FollowUpdater(autoUpdater as unknown as AppUpdater),
+    updateInfo,
+  }
+}
+
+const clearAppImageEnv = () => {
+  delete process.env.APPIMAGE
+  delete process.env.APPDIR
+}
+
+describe("canSelfUpdate", () => {
+  afterEach(clearAppImageEnv)
+
+  it("lets the Windows installer and the AppImage replace themselves", () => {
+    expect(canSelfUpdate("win32")).toBe(true)
+
+    process.env.APPIMAGE = "/opt/Folo.AppImage"
+    expect(canSelfUpdate("linux")).toBe(true)
   })
 
-  it("falls back to a successful app update result", async () => {
-    const { finalizeDirectUpdateResult } = await import("./index")
+  it("sends installations that cannot replace themselves to the release page", () => {
+    clearAppImageEnv()
+    expect(canSelfUpdate("linux")).toBe(false)
+    expect(canSelfUpdate("darwin")).toBe(false)
+  })
+})
 
-    expect(
-      finalizeDirectUpdateResult({
-        rendererResult: { hasUpdate: false, error: "renderer failed" },
-        appResult: { hasUpdate: true },
-        policy: {
-          action: "none",
-          targetVersion: null,
-          message: null,
-          distribution: "direct",
-          downloadUrl: null,
-          storeUrl: null,
-          publishedAt: null,
-        },
-      }),
-    ).toEqual({ hasUpdate: true })
+describe("getReleasePageUrl", () => {
+  it("prefers the tag electron-updater resolved", () => {
+    expect(getReleasePageUrl("1.16.0", "v1.16.0")).toBe(
+      "https://github.com/expoli/Folo/releases/tag/v1.16.0",
+    )
   })
 
-  it("preserves errors when both renderer and app attempts fail", async () => {
-    const { finalizeDirectUpdateResult } = await import("./index")
+  it("falls back to the version when the provider reports no tag", () => {
+    expect(getReleasePageUrl("1.16.0")).toBe("https://github.com/expoli/Folo/releases/tag/v1.16.0")
+  })
+})
 
-    expect(
-      finalizeDirectUpdateResult({
-        rendererResult: { hasUpdate: false, error: "renderer failed" },
-        appResult: { hasUpdate: false, error: "app failed" },
-        policy: {
-          action: "none",
-          targetVersion: null,
-          message: null,
-          distribution: "direct",
-          downloadUrl: null,
-          storeUrl: null,
-          publishedAt: null,
-        },
-      }),
-    ).toEqual({
-      hasUpdate: false,
-      error: "app failed",
+describe("update decision", () => {
+  afterEach(() => {
+    vi.clearAllMocks()
+    clearAppImageEnv()
+  })
+
+  it("reports nothing to do when the release is not newer", async () => {
+    const { updater } = createUpdater({ isUpdateAvailable: false })
+
+    await expect(updater.checkForUpdates()).resolves.toEqual({ hasUpdate: false })
+    expect(mocks.distributionUpdateAvailable).not.toHaveBeenCalled()
+  })
+
+  it("lets electron-updater install the update inside an AppImage", async () => {
+    process.env.APPIMAGE = "/opt/Folo.AppImage"
+    const { updater } = createUpdater({ isUpdateAvailable: true, tag: "v1.16.0" })
+
+    await expect(updater.checkForUpdates()).resolves.toEqual({ hasUpdate: true })
+    expect(mocks.distributionUpdateAvailable).not.toHaveBeenCalled()
+  })
+
+  it("points every other installation at the release page", async () => {
+    const { updater } = createUpdater({ isUpdateAvailable: true, tag: "v1.16.0" })
+
+    await expect(updater.checkForUpdates()).resolves.toEqual({ hasUpdate: true })
+    expect(mocks.distributionUpdateAvailable).toHaveBeenCalledWith({
+      distribution: "direct",
+      targetUrl: "https://github.com/expoli/Folo/releases/tag/v1.16.0",
+      storeVersion: "1.16.0",
+      currentVersion: "1.15.0",
     })
-  })
-
-  it("surfaces direct policy availability when no payload can be applied", async () => {
-    const { finalizeDirectUpdateResult } = await import("./index")
-
-    expect(
-      finalizeDirectUpdateResult({
-        rendererResult: { hasUpdate: false },
-        appResult: { hasUpdate: false },
-        policy: {
-          action: "block",
-          targetVersion: "1.5.1",
-          message: "Install the latest desktop app.",
-          distribution: "direct",
-          downloadUrl: "https://ota.folo.is/Folo-1.5.1.exe",
-          storeUrl: null,
-          publishedAt: "2026-04-11T10:00:00.000Z",
-        },
-      }),
-    ).toEqual({ hasUpdate: true })
-  })
-
-  it("drops stale renderer and app errors once a direct policy provides an update path", async () => {
-    const { finalizeDirectUpdateResult } = await import("./index")
-
-    expect(
-      finalizeDirectUpdateResult({
-        rendererResult: { hasUpdate: false, error: "renderer failed" },
-        appResult: { hasUpdate: false, error: "app failed" },
-        policy: {
-          action: "prompt",
-          targetVersion: "1.5.1",
-          message: "Install the latest desktop app.",
-          distribution: "direct",
-          downloadUrl: "https://ota.folo.is/Folo-1.5.1.exe",
-          storeUrl: null,
-          publishedAt: "2026-04-11T10:00:00.000Z",
-        },
-      }),
-    ).toEqual({ hasUpdate: true })
   })
 })

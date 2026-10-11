@@ -1,0 +1,191 @@
+name: 🚀 Release Desktop
+
+# Publishes this fork's own desktop builds. The app updates itself from these releases.
+#
+# The tag is a plain version (`v1.16.0`) rather than upstream's `desktop/v<version>`: electron-updater
+# matches releases against the `releases.atom` entries with `/\/tag\/(v?[^/]+)$/`, which a tag
+# containing a slash never matches (release notes then come from an unrelated release), and the
+# prerelease channel path additionally requires a semver tag. Version gating itself happens on the
+# `version` inside the `latest*.yml` channel files below, not on the tag.
+#
+# Bump `apps/desktop/package.json` before running it: a release that is not higher than the installed
+# build is never offered, and keep the versions increasing — `releases/latest` is the entry point of
+# the feed, so a later release of an older version moves it backwards.
+#
+# What an installation does with a newer release:
+#   - AppImage and Windows installer: downloaded and installed by the app, then a restart notice
+#   - .deb and the unsigned macOS bundle: a notice that opens the release page
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: release-desktop
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  NODE_OPTIONS: --max-old-space-size=8192
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      value: ${{ steps.read.outputs.value }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Read the version to release
+        id: read
+        run: |
+          version="$(node -p "require('./apps/desktop/package.json').version")"
+          echo "Releasing v${version}"
+          echo "value=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Fail when that version is already taken
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v${{ steps.read.outputs.value }}" >/dev/null 2>&1; then
+            echo "::error::v${{ steps.read.outputs.value }} already exists as a release or as a draft of a failed run. Delete it (gh release delete <tag> --cleanup-tag) or bump apps/desktop/package.json."
+            exit 1
+          fi
+
+  build:
+    needs: version
+    runs-on: ${{ matrix.os }}
+    # a packaging run that hangs should fail rather than burn the six hour default
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+        with:
+          # the build embeds the commit hash and the packaging scripts read the git history
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Use Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install macOS packaging tools
+        if: runner.os == 'macOS'
+        run: |
+          brew install python-setuptools
+          pnpm add -g appdmg
+
+      - name: Install Linux packaging tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y fakeroot dpkg
+
+      - name: Prebuild packages (Windows)
+        if: runner.os == 'windows'
+        run: pnpm run build:packages
+
+      - name: Update main hash
+        working-directory: apps/desktop
+        run: pnpm run update:main-hash
+
+      - name: Build - Vite
+        working-directory: apps/desktop
+        run: pnpm run build:electron-vite
+
+      - name: Build - Windows and Linux
+        if: runner.os != 'macOS'
+        working-directory: apps/desktop
+        run: pnpm run build:electron-forge
+
+      - name: Build - macOS
+        if: runner.os == 'macOS'
+        working-directory: apps/desktop
+        # both architectures plus the latest-mac.yml that lists them
+        run: pnpm run build:electron-forge:macos
+
+      - name: Verify the packaged bundle
+        if: runner.os == 'Linux'
+        working-directory: apps/desktop
+        run: pnpm run verify:package -- "data-reduce-progress" "reduce_fetching"
+
+      - name: Stage the release assets
+        shell: bash
+        run: |
+          shopt -s globstar nullglob
+          mkdir -p release-assets
+          cp apps/desktop/out/make/**/Folo-*.dmg \
+            apps/desktop/out/make/**/Folo-*.zip \
+            apps/desktop/out/make/**/Folo-*.exe \
+            apps/desktop/out/make/**/Folo-*.AppImage \
+            apps/desktop/out/make/**/Folo-*.deb \
+            apps/desktop/out/make/**/latest*.yml \
+            release-assets/
+          ls -l release-assets
+
+      - name: Upload the release assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-${{ runner.os }}
+          path: release-assets
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Download every platform
+        uses: actions/download-artifact@v8
+        with:
+          pattern: desktop-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Prepare the release notes
+        id: notes
+        shell: bash
+        run: |
+          version="${{ needs.version.outputs.value }}"
+          notes="$RUNNER_TEMP/release-notes.md"
+          changelog="apps/desktop/changelog/${version}.md"
+
+          if [ -f "$changelog" ]; then
+            cp "$changelog" "$notes"
+          else
+            printf 'Folo %s, built from this repository.\n' "$version" > "$notes"
+          fi
+
+          echo "path=${notes}" >> "$GITHUB_OUTPUT"
+
+      # A draft first: an installation must never see a release whose assets are still uploading.
+      - name: Upload the release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: Folo ${{ needs.version.outputs.value }}
+          tag_name: v${{ needs.version.outputs.value }}
+          body_path: ${{ steps.notes.outputs.path }}
+          draft: true
+          prerelease: false
+          files: release-assets/*
+
+      - name: Publish it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "v${{ needs.version.outputs.value }}" --draft=false

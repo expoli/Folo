@@ -1,46 +1,66 @@
-import { fileURLToPath } from "node:url"
-
 import { callWindowExpose } from "@follow/shared/bridge"
-import { DEV } from "@follow/shared/constants"
 import { version as appVersion } from "@pkg"
+import { app } from "electron"
 import log from "electron-log"
-import type { AppUpdater } from "electron-updater"
+import type { AppUpdater, UpdateInfo } from "electron-updater"
 import { autoUpdater as defaultAutoUpdater } from "electron-updater"
-import { join } from "pathe"
 
+import { GITHUB_OWNER, GITHUB_REPO } from "~/constants/app"
 import { WindowManager } from "~/manager/window"
-import type { RendererManifest } from "~/updater/hot-updater"
-import { RendererEligibilityStatus, rendererUpdater } from "~/updater/hot-updater"
 
 import { channel, isWindows } from "../env"
-import { fetchDesktopManifest, fetchDesktopPolicy, getDesktopRuntimeVersion } from "./api"
 import { appUpdaterConfig } from "./configs"
-import { FollowUpdateProvider } from "./follow-update-provider"
-import type { DesktopAppPayload, DesktopManifestResponse, DesktopPolicyResponse } from "./types"
 import { WindowsUpdater } from "./windows-updater"
 
 const logger = log.scope("app-updater")
-type UpdateCheckOptions = {
-  refresh?: boolean
-}
 
 type UpdateCheckResult = {
   hasUpdate: boolean
   error?: string
 }
 
-class FollowUpdater {
+/** The GitHub provider adds the release tag to the update info it resolves. */
+type ProviderUpdateInfo = UpdateInfo & { tag?: string }
+
+/**
+ * Whether the running installation can replace itself with a downloaded build.
+ *
+ * electron-updater swaps an AppImage in place and runs the Windows installer, so those two update
+ * themselves. The `.deb` package cannot: packaging writes no `package-type` marker, which makes
+ * electron-updater pick the AppImage updater that needs `$APPIMAGE`, and the AppImage is the only
+ * Linux artifact in the channel file. The macOS updater (Squirrel.Mac) needs a signed bundle and
+ * these builds are unsigned. Both therefore open the release page instead of starting a download
+ * that could never be installed.
+ */
+export const canSelfUpdate = (platform: NodeJS.Platform = process.platform) => {
+  switch (platform) {
+    case "win32": {
+      return true
+    }
+    case "linux": {
+      return Boolean(process.env.APPIMAGE || process.env.APPDIR)
+    }
+    default: {
+      return false
+    }
+  }
+}
+
+/** The release page of the resolved tag, which is where a manual installation starts. */
+export const getReleasePageUrl = (version: string, tag?: null | string) =>
+  `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/tag/${tag || `v${version}`}`
+
+export class FollowUpdater {
   private readonly disabled: boolean
   private checkingUpdate = false
   private downloadingUpdate = false
 
   private pollingTimer: NodeJS.Timeout | null = null
 
-  constructor(
-    private readonly autoUpdater: AppUpdater,
-    private readonly renderer = rendererUpdater,
-  ) {
-    this.disabled = !appUpdaterConfig.enableAppUpdate
+  constructor(private readonly autoUpdater: AppUpdater) {
+    // Store builds are updated by their store, and a development run has nothing to update.
+    this.disabled =
+      !appUpdaterConfig.enableAppUpdate || !appUpdaterConfig.enableCoreUpdate || !app.isPackaged
   }
 
   register() {
@@ -53,22 +73,19 @@ class FollowUpdater {
     this.autoUpdater.allowPrerelease = channel !== "stable"
     this.autoUpdater.autoInstallOnAppQuit = true
     this.autoUpdater.autoRunAppAfterInstall = true
-    this.autoUpdater.forceDevUpdateConfig = DEV
 
-    if (import.meta.env.DEV) {
-      const __dirname = fileURLToPath(new URL(".", import.meta.url))
-      this.autoUpdater.updateConfigPath = join(__dirname, "../../dev-only/dev-app-update.yml")
-    }
-
+    // This fork publishes its own builds: the updater reads the newest release of
+    // `GITHUB_OWNER`/`GITHUB_REPO` and the `latest*.yml` channel files it ships.
     this.autoUpdater.setFeedURL({
-      provider: "custom",
-      updateProvider: FollowUpdateProvider,
+      provider: "github",
+      owner: GITHUB_OWNER,
+      repo: GITHUB_REPO,
     })
 
     this.registerAutoUpdaterEvents()
 
     if (appUpdaterConfig.app.autoCheckUpdate) {
-      logger.info("Initial update check, runtimeVersion:", getDesktopRuntimeVersion())
+      logger.info("Initial update check", { version: appVersion })
       void this.checkForUpdates().catch((error) =>
         logger.error("Initial update check failed", error),
       )
@@ -91,7 +108,7 @@ class FollowUpdater {
     this.pollingTimer = setInterval(updatePollingHandler, appUpdaterConfig.app.checkUpdateInterval)
   }
 
-  async checkForUpdates(_options: UpdateCheckOptions = {}): Promise<UpdateCheckResult> {
+  async checkForUpdates(): Promise<UpdateCheckResult> {
     if (this.disabled) {
       return { hasUpdate: false }
     }
@@ -104,14 +121,24 @@ class FollowUpdater {
     this.checkingUpdate = true
 
     try {
-      const [manifest, policy] = await Promise.all([fetchDesktopManifest(), fetchDesktopPolicy()])
+      const result = await this.autoUpdater.checkForUpdates()
 
-      if (appUpdaterConfig.enableDistributionStoreUpdate) {
-        logger.info("Distribution store update enabled, checking ota manifest and store policy")
-        return this.handleDistributionAppDecision(manifest, policy)
+      if (!result?.isUpdateAvailable) {
+        logger.info("Update decision: none")
+        return { hasUpdate: false }
       }
 
-      return this.handleDirectAppDecision(manifest, policy)
+      const { updateInfo } = result
+
+      if (canSelfUpdate()) {
+        // The download was started by the `update-available` handler below and finishes with the
+        // `updateDownloaded` notice, which asks the user to restart.
+        logger.info("Update decision: self update", { version: updateInfo.version })
+        return { hasUpdate: true }
+      }
+
+      logger.info("Update decision: manual download", { version: updateInfo.version })
+      return await this.notifyManualUpdate(updateInfo)
     } catch (error) {
       logger.error("Failed to check for updates", error)
       return { hasUpdate: false, error: error instanceof Error ? error.message : "Unknown error" }
@@ -120,54 +147,41 @@ class FollowUpdater {
     }
   }
 
-  async handleDirectAppDecision(
-    manifest: DesktopManifestResponse | null,
-    policy: DesktopPolicyResponse,
-  ): Promise<UpdateCheckResult> {
-    let rendererResult: UpdateCheckResult | null = null
-    let appResult: UpdateCheckResult | null = null
+  quitAndInstall() {
+    const mainWindow = WindowManager.getMainWindow()
+    logger.info("Quit and install triggered", { windowId: mainWindow?.id })
+    WindowManager.destroyMainWindow()
 
-    if (manifest?.renderer) {
-      logger.info("Update decision: renderer")
-      rendererResult = await this.handleRendererDecision(manifest, manifest.app)
-      if (rendererResult.hasUpdate) {
-        return rendererResult
-      }
-    }
-
-    if (manifest?.app) {
-      logger.info("Update decision: app")
-      appResult = await this.handleAppDecision(manifest.app)
-      if (appResult.hasUpdate) {
-        return appResult
-      }
-    }
-
-    const result = finalizeDirectUpdateResult({
-      rendererResult,
-      appResult,
-      policy,
-    })
-
-    if (result.hasUpdate && policy.distribution === "direct" && policy.downloadUrl) {
-      logger.info("Direct binary policy available", {
-        action: policy.action,
-        downloadUrl: policy.downloadUrl,
-      })
-      await this.notifyDistributionUpdate(policy)
-    } else if (result.hasUpdate && policy.distribution === "direct") {
-      logger.info("Direct binary policy available", {
-        action: policy.action,
-        downloadUrl: null,
-      })
-    } else if (!result.hasUpdate) {
-      logger.info("Update decision: none")
-    }
-
-    return result
+    setTimeout(() => {
+      logger.info("Main window closed, quitting to install update")
+      this.autoUpdater.quitAndInstall()
+    }, 1000)
   }
 
-  async downloadAppUpdate(): Promise<void> {
+  /**
+   * Installs this build by hand and therefore gets the release page instead of a download: the
+   * renderer shows the same notice it uses for store updates and opens the URL when clicked.
+   */
+  private async notifyManualUpdate(updateInfo: ProviderUpdateInfo): Promise<UpdateCheckResult> {
+    const targetUrl = getReleasePageUrl(updateInfo.version, updateInfo.tag)
+
+    const mainWindow = WindowManager.getMainWindow()
+    if (!mainWindow) {
+      logger.warn("Main window unavailable when notifying a manual update", { targetUrl })
+      return { hasUpdate: true }
+    }
+
+    await callWindowExpose(mainWindow).distributionUpdateAvailable({
+      distribution: "direct",
+      targetUrl,
+      storeVersion: updateInfo.version,
+      currentVersion: appVersion,
+    })
+
+    return { hasUpdate: true }
+  }
+
+  private async downloadAppUpdate(): Promise<void> {
     if (this.disabled || this.downloadingUpdate) {
       return
     }
@@ -184,259 +198,6 @@ class FollowUpdater {
     }
   }
 
-  quitAndInstall() {
-    const mainWindow = WindowManager.getMainWindow()
-    logger.info("Quit and install triggered", { windowId: mainWindow?.id })
-    WindowManager.destroyMainWindow()
-
-    setTimeout(() => {
-      logger.info("Main window closed, quitting to install update")
-      this.autoUpdater.quitAndInstall()
-    }, 1000)
-  }
-
-  private async handleAppDecision(
-    appDecision: DesktopAppPayload | null,
-  ): Promise<UpdateCheckResult> {
-    if (!appUpdaterConfig.enableCoreUpdate) {
-      logger.info("Core app update disabled by configuration")
-      return { hasUpdate: false }
-    }
-
-    if (!appDecision) {
-      logger.warn("App update decision missing app payload")
-      return { hasUpdate: false, error: "App update metadata unavailable" }
-    }
-
-    FollowUpdateProvider.setContext({ app: appDecision })
-    logger.info("FollowUpdateProvider context set", { platform: appDecision.platform })
-
-    try {
-      const result = await this.autoUpdater.checkForUpdates()
-      return { hasUpdate: result?.isUpdateAvailable ?? false }
-    } catch (error) {
-      logger.warn(
-        "autoUpdater.checkForUpdates failed after preparing FollowUpdateProvider context",
-        error,
-      )
-      return {
-        hasUpdate: false,
-        error: error instanceof Error ? error.message : "Failed to check app update",
-      }
-    } finally {
-      FollowUpdateProvider.clearContext()
-    }
-  }
-
-  private async handleDistributionAppDecision(
-    manifest: DesktopManifestResponse | null,
-    policy: DesktopPolicyResponse,
-  ): Promise<UpdateCheckResult> {
-    try {
-      if (!appUpdaterConfig.enableDistributionStoreUpdate) {
-        return { hasUpdate: false }
-      }
-
-      const rendererResult = await this.tryDistributionRendererUpdate(manifest)
-      if (rendererResult) {
-        return rendererResult
-      }
-
-      if (!this.shouldPromptDistributionStoreUpdate(policy)) {
-        logger.info("Distribution update does not require store action")
-        return { hasUpdate: false }
-      }
-
-      logger.info("Distribution store update required")
-      return await this.notifyDistributionUpdate(policy)
-    } catch (error) {
-      logger.error("Failed to handle distribution app update", error)
-      return {
-        hasUpdate: false,
-        error: error instanceof Error ? error.message : "Failed to handle distribution update",
-      }
-    }
-  }
-
-  private async tryDistributionRendererUpdate(
-    manifestResponse: DesktopManifestResponse | null,
-  ): Promise<UpdateCheckResult | null> {
-    const renderer = manifestResponse?.renderer ?? null
-    if (!renderer) {
-      return null
-    }
-
-    if (!appUpdaterConfig.enableRenderHotUpdate) {
-      logger.info("Renderer hot update disabled for distribution build")
-      return null
-    }
-
-    const manifest = this.renderer.extractManifestFromRendererUpdate(
-      renderer,
-      manifestResponse?.runtimeVersion ?? getDesktopRuntimeVersion(),
-    )
-    if (!manifest) {
-      logger.warn("Distribution renderer update missing manifest")
-      return null
-    }
-
-    const eligibility = this.renderer.evaluateManifest(manifest)
-
-    switch (eligibility.status) {
-      case RendererEligibilityStatus.NoManifest: {
-        if (eligibility.reason) {
-          logger.warn("Distribution renderer update missing manifest data", {
-            reason: eligibility.reason,
-          })
-        }
-        return null
-      }
-
-      case RendererEligibilityStatus.AlreadyCurrent: {
-        if (eligibility.reason) {
-          logger.info(eligibility.reason)
-        }
-        return { hasUpdate: false }
-      }
-
-      case RendererEligibilityStatus.RequiresFullAppUpdate: {
-        logger.info(
-          eligibility.reason ??
-            "Renderer payload requires main process update, delegating to distribution store flow",
-        )
-        return null
-      }
-
-      case RendererEligibilityStatus.Eligible: {
-        const manifestToApply = eligibility.manifest as RendererManifest | undefined
-        if (!manifestToApply) {
-          logger.warn("Distribution renderer update missing manifest payload")
-          return null
-        }
-
-        try {
-          await this.renderer.applyManifest(manifestToApply)
-          return { hasUpdate: true }
-        } catch (error) {
-          logger.error("Renderer hot update failed for distribution build", error)
-          return {
-            hasUpdate: false,
-            error: error instanceof Error ? error.message : "Renderer hot update failed",
-          }
-        }
-      }
-
-      default: {
-        return null
-      }
-    }
-  }
-
-  private shouldPromptDistributionStoreUpdate(info: DesktopPolicyResponse): boolean {
-    if (info.distribution === "direct") {
-      return false
-    }
-
-    if (!info.storeUrl) {
-      logger.info("Distribution store update skipped: missing store URL", {
-        distribution: info.distribution,
-      })
-      return false
-    }
-
-    return info.action !== "none"
-  }
-
-  private async notifyDistributionUpdate(info: DesktopPolicyResponse): Promise<UpdateCheckResult> {
-    const mainWindow = WindowManager.getMainWindow()
-    if (!mainWindow) {
-      logger.warn("Main window unavailable when notifying distribution update")
-      return { hasUpdate: true }
-    }
-
-    const targetUrl = info.distribution === "direct" ? info.downloadUrl : info.storeUrl
-
-    if (!targetUrl) {
-      logger.warn("Distribution update missing target URL", {
-        distribution: info.distribution,
-      })
-      return { hasUpdate: false }
-    }
-
-    await callWindowExpose(mainWindow).distributionUpdateAvailable({
-      distribution: info.distribution,
-      targetUrl,
-      storeVersion: info.targetVersion ?? null,
-      currentVersion: appVersion,
-    })
-
-    return { hasUpdate: true }
-  }
-
-  private async handleRendererDecision(
-    manifestResponse: DesktopManifestResponse | null,
-    fallbackApp: DesktopAppPayload | null,
-  ): Promise<UpdateCheckResult> {
-    if (!appUpdaterConfig.enableRenderHotUpdate) {
-      logger.info("Renderer hot update disabled; falling back to app decision if present")
-      if (fallbackApp) {
-        return this.handleAppDecision(fallbackApp)
-      }
-      return { hasUpdate: false }
-    }
-
-    const manifest = this.renderer.extractManifest(manifestResponse)
-    const eligibility = this.renderer.evaluateManifest(manifest)
-
-    switch (eligibility.status) {
-      case RendererEligibilityStatus.NoManifest: {
-        return { hasUpdate: false, error: eligibility.reason }
-      }
-
-      case RendererEligibilityStatus.AlreadyCurrent: {
-        if (eligibility.reason) {
-          logger.info(eligibility.reason)
-        }
-        return { hasUpdate: false }
-      }
-
-      case RendererEligibilityStatus.RequiresFullAppUpdate: {
-        logger.info(
-          eligibility.reason,
-
-          "Renderer payload requires main process update, delegating to app updater",
-        )
-        if (fallbackApp) {
-          return this.handleAppDecision(fallbackApp)
-        }
-        logger.warn("Renderer update requested full app upgrade but no app payload provided")
-        return { hasUpdate: false, error: "Renderer update requires full app upgrade" }
-      }
-
-      case RendererEligibilityStatus.Eligible: {
-        const manifestToApply = eligibility.manifest as RendererManifest | undefined
-        if (!manifestToApply) {
-          return { hasUpdate: false }
-        }
-
-        try {
-          await this.renderer.applyManifest(manifestToApply)
-          return { hasUpdate: true }
-        } catch (error) {
-          logger.error("Renderer hot update failed", error)
-          return {
-            hasUpdate: false,
-            error: error instanceof Error ? error.message : "Renderer hot update failed",
-          }
-        }
-      }
-
-      default: {
-        return { hasUpdate: false }
-      }
-    }
-  }
-
   private registerAutoUpdaterEvents() {
     this.autoUpdater.on("checking-for-update", () => {
       logger.info("autoUpdater: checking for update")
@@ -445,7 +206,11 @@ class FollowUpdater {
     this.autoUpdater.on("update-available", (info) => {
       logger.info("autoUpdater: update available", info)
 
-      if (appUpdaterConfig.app.autoDownloadUpdate && appUpdaterConfig.enableCoreUpdate) {
+      if (
+        appUpdaterConfig.app.autoDownloadUpdate &&
+        appUpdaterConfig.enableCoreUpdate &&
+        canSelfUpdate()
+      ) {
         void this.downloadAppUpdate().catch((error) =>
           logger.error("Automatic download failed", error),
         )
@@ -479,37 +244,10 @@ class FollowUpdater {
 const autoUpdater = isWindows ? new WindowsUpdater() : defaultAutoUpdater
 const followUpdater = new FollowUpdater(autoUpdater)
 
-export function finalizeDirectUpdateResult(input: {
-  rendererResult?: UpdateCheckResult | null
-  appResult?: UpdateCheckResult | null
-  policy: DesktopPolicyResponse
-}) {
-  if (input.rendererResult?.hasUpdate) {
-    return input.rendererResult
-  }
-
-  if (input.appResult?.hasUpdate) {
-    return input.appResult
-  }
-
-  const lastError = input.appResult?.error ?? input.rendererResult?.error
-
-  if (
-    input.policy.action !== "none" &&
-    input.policy.distribution === "direct" &&
-    input.policy.downloadUrl
-  ) {
-    return { hasUpdate: true }
-  }
-
-  return { hasUpdate: false, ...(lastError ? { error: lastError } : {}) }
-}
-
 export const registerUpdater = () => {
   followUpdater.register()
 }
 
-export const checkForAppUpdates = (options: UpdateCheckOptions = {}) =>
-  followUpdater.checkForUpdates(options)
+export const checkForAppUpdates = () => followUpdater.checkForUpdates()
 
 export const quitAndInstall = () => followUpdater.quitAndInstall()
