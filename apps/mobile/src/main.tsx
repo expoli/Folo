@@ -1,7 +1,6 @@
 import "./global.css"
 import "./polyfill"
 
-import { configureLocalAI } from "@follow/store/ai-local/config"
 import {
   apiContext,
   authClientContext,
@@ -23,6 +22,7 @@ import { initializeApp } from "./initialize"
 import { followApi } from "./lib/api-client"
 import { authClient } from "./lib/auth"
 import { initializeI18n } from "./lib/i18n"
+import { applyLocalAISettings, subscribeLocalAISettings } from "./lib/local-ai"
 import { TabRoot } from "./lib/navigation/bottom-tab/TabRoot"
 import { TabScreen } from "./lib/navigation/bottom-tab/TabScreen"
 import { RootStackNavigation } from "./lib/navigation/StackNavigation"
@@ -44,11 +44,10 @@ queryClientContext.provide(queryClient)
 apiContext.provide(followApi)
 syncApiContext.provide(followApi.sync)
 
-// Route summary / translation through a self-hosted AI gateway when configured.
-configureLocalAI({
-  baseUrl: process.env.EXPO_PUBLIC_LOCAL_AI_GATEWAY_URL ?? null,
-  token: process.env.EXPO_PUBLIC_LOCAL_AI_TOKEN ?? null,
-})
+// Summaries and translations run on the endpoint configured in Settings → AI when it is enabled;
+// the build-time `EXPO_PUBLIC_LOCAL_AI_*` values only seed the first run.
+applyLocalAISettings()
+subscribeLocalAISettings()
 
 enableFreeze(true)
 ;[Image, LinearGradient].forEach((Component) => {

@@ -1,3 +1,8 @@
+import ai_en from "@locales/ai/en.json"
+import ai_frFR from "@locales/ai/fr-FR.json"
+import ai_ja from "@locales/ai/ja.json"
+import ai_zhCN from "@locales/ai/zh-CN.json"
+import ai_zhTW from "@locales/ai/zh-TW.json"
 import common_en from "@locales/common/en.json"
 import common_frFR from "@locales/common/fr-FR.json"
 import common_ja from "@locales/common/ja.json"
@@ -29,6 +34,7 @@ import type { MobileSupportedLanguages, ns } from "./constants"
 // @keep-sorted
 export const defaultResources = {
   "fr-FR": {
+    ai: ai_frFR,
     common: common_frFR,
     default: frFR,
     errors: errors_frFR,
@@ -37,6 +43,7 @@ export const defaultResources = {
   },
   // @keep-sorted
   "zh-CN": {
+    ai: ai_zhCN,
     common: common_zhCN,
     default: zhCN,
     errors: errors_zhCN,
@@ -45,6 +52,7 @@ export const defaultResources = {
   },
   // @keep-sorted
   "zh-TW": {
+    ai: ai_zhTW,
     common: common_zhTW,
     default: zhTW,
     errors: errors_zhTW,
@@ -53,6 +61,7 @@ export const defaultResources = {
   },
   // @keep-sorted
   en: {
+    ai: ai_en,
     common: common_en,
     default: en,
     errors: errors_en,
@@ -61,6 +70,7 @@ export const defaultResources = {
   },
   // @keep-sorted
   ja: {
+    ai: ai_ja,
     common: common_ja,
     default: ja,
     errors: errors_ja,

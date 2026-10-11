@@ -14,6 +14,7 @@ import {
   GroupedInsetListNavigationLinkIcon,
 } from "@/src/components/ui/grouped/GroupedList"
 import { Text } from "@/src/components/ui/typography/Text"
+import { AiCuteFiIcon } from "@/src/icons/ai_cute_fi"
 import { CertificateCuteFiIcon } from "@/src/icons/certificate_cute_fi"
 import { DatabaseIcon } from "@/src/icons/database"
 import { ExitCuteFiIcon } from "@/src/icons/exit_cute_fi"
@@ -42,6 +43,7 @@ import { DataScreen } from "./routes/Data"
 import { FeedsScreen } from "./routes/Feeds"
 import { GeneralScreen } from "./routes/General"
 import { ListsScreen } from "./routes/Lists"
+import { LocalAIScreen } from "./routes/LocalAI"
 import { NotificationsScreen } from "./routes/Notifications"
 import { PlanScreen } from "./routes/Plan"
 import { PrivacyScreen } from "./routes/Privacy"
@@ -52,6 +54,7 @@ type SettingsNavigationTranslationKey =
   | "titles.notifications"
   | "titles.appearance"
   | "titles.spotlight"
+  | "titles.ai"
   | "titles.data_control"
   | "titles.account"
   | "titles.subscription.short"
@@ -118,6 +121,15 @@ const SettingGroupNavigationLinks: GroupNavigationLink[] = [
       navigation.pushControllerView(SpotlightScreen)
     },
     iconBackgroundColor: "#14B8A6",
+  },
+  {
+    translationKey: "titles.ai",
+    icon: AiCuteFiIcon,
+    onPress: ({ navigation }) => {
+      navigation.pushControllerView(LocalAIScreen)
+    },
+    iconBackgroundColor: "#10B981",
+    testID: "settings-local-ai-link",
   },
   {
     translationKey: "titles.data_control",
