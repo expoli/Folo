@@ -1,5 +1,12 @@
 import type { LocalAIDirectConfig } from "@follow/shared/settings/local-ai"
-import { createUIMessageStream, createUIMessageStreamResponse, generateText, streamText } from "ai"
+import { DEFAULT_CHAT_SYSTEM_PROMPT } from "@follow/store/ai-local/direct/prompts"
+import {
+  createDirectModel,
+  DIRECT_CONTEXT_BUDGET,
+  directCallOptions,
+  resolveModelId,
+} from "@follow/store/ai-local/direct/provider"
+import { createUIMessageStream, createUIMessageStreamResponse, streamText } from "ai"
 import { app } from "electron"
 import { join } from "pathe"
 
@@ -19,16 +26,9 @@ import {
   pendingEntryTexts,
   toModelMessages,
 } from "./context"
-import { jsonResponse } from "./http"
+import { jsonResponse, netFetch } from "./http"
 import type { NotesCache } from "./notes-cache"
 import { createNotesCache } from "./notes-cache"
-import { DEFAULT_CHAT_SYSTEM_PROMPT } from "./prompts"
-import {
-  createDirectModel,
-  DIRECT_CONTEXT_BUDGET,
-  directCallOptions,
-  resolveModelId,
-} from "./provider"
 import { noteCacheKey, summarizeEntries } from "./reduce"
 
 /** Longest note attached per article, and for all notes together: the prompt still has a size. */
@@ -99,7 +99,7 @@ export const createChatStreamResponse = async (params: {
 
   let model
   try {
-    model = createDirectModel({ config, apiKey, requestedModel })
+    model = createDirectModel({ config, apiKey, fetch: netFetch, requestedModel })
   } catch (error) {
     return jsonResponse(400, { error: error instanceof Error ? error.message : String(error) })
   }
@@ -285,29 +285,3 @@ export const createChatStreamResponse = async (params: {
 
 /** `GET /ai/chat/:id/stream` has no server-side history to resume; always "no active stream". */
 export const createStreamResumeResponse = () => new Response(null, { status: 204 })
-
-/** One minimal model call, so the settings UI can tell "endpoint up" from "model answers". */
-export const probeDirectModel = async (params: {
-  config: LocalAIDirectConfig
-  apiKey: string | null
-}) => {
-  const startedAt = Date.now()
-
-  try {
-    await generateText({
-      model: createDirectModel(params),
-      prompt: "ping",
-      maxOutputTokens: 1,
-      // A probe reports the state right now; the SDK's retries would only make the user wait.
-      maxRetries: 0,
-    })
-
-    return { ok: true as const, latencyMs: Date.now() - startedAt }
-  } catch (error) {
-    return {
-      ok: false as const,
-      latencyMs: Date.now() - startedAt,
-      error: error instanceof Error ? error.message : String(error),
-    }
-  }
-}

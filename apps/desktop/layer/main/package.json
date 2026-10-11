@@ -28,6 +28,7 @@
     "@follow-app/client-sdk": "catalog:",
     "@follow-app/readability": "workspace:*",
     "@follow/shared": "workspace:*",
+    "@follow/store": "workspace:*",
     "@follow/utils": "workspace:*",
     "builder-util-runtime": "9.7.0",
     "electron-context-menu": "5.1.0",

@@ -548,6 +548,9 @@ importers:
       '@follow/shared':
         specifier: workspace:*
         version: link:../../../../packages/internal/shared
+      '@follow/store':
+        specifier: workspace:*
+        version: link:../../../../packages/internal/store
       '@follow/utils':
         specifier: workspace:*
         version: link:../../../../packages/internal/utils
@@ -2432,6 +2435,9 @@ importers:
 
   packages/internal/store:
     dependencies:
+      '@ai-sdk/openai-compatible':
+        specifier: 3.0.6
+        version: 3.0.6(zod@4.6.5)
       '@follow-app/client-sdk':
         specifier: 0.3.96
         version: 0.3.96(79e875ec96b251dcbd6980579966a6eb)
@@ -2462,6 +2468,9 @@ importers:
       '@yornaath/batshit':
         specifier: 0.14.0
         version: 0.14.0
+      ai:
+        specifier: 7.0.109
+        version: 7.0.109(zod@4.6.5)
       es-toolkit:
         specifier: 1.52.0
         version: 1.52.0

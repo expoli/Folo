@@ -2,7 +2,7 @@
  * Request-shaping helpers of the app's own AI provider, copied from `tools/ai-gateway/server.mjs`
  * so the direct mode and a self-hosted gateway produce the same prompts.
  */
-import { languageName, NO_CONTEXT_NOTE } from "./prompts"
+import { languageName, NO_CONTEXT_NOTE } from "@follow/store/ai-local/direct/prompts"
 
 interface ChatPart {
   type?: unknown

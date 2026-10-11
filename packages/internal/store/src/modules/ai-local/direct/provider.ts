@@ -2,8 +2,6 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
 import type { LocalAIDirectConfig } from "@follow/shared/settings/local-ai"
 import type { LanguageModel } from "ai"
 
-import { netFetch } from "./http"
-
 /**
  * Output cap of one model call, matching `AI_MAX_OUTPUT_TOKENS`' default in the gateway. It has to
  * cover a reasoning model's thinking: a cap that the reasoning consumes leaves an empty answer.
@@ -48,14 +46,19 @@ const finite = (value: number | null | undefined) =>
 /**
  * Talks to the OpenAI-compatible endpoint the user configured: OpenAI, OpenRouter, Vercel AI
  * Gateway, Ollama, vLLM, LM Studio or an internal gateway all speak plain chat completions.
+ *
+ * `fetch` is injected: the desktop app passes Chromium's network stack so the call follows the
+ * app's proxy, the mobile app passes its own runtime's fetch.
  */
-const createProvider = (config: LocalAIDirectConfig, apiKey: string | null) =>
+const createProvider = (
+  config: LocalAIDirectConfig,
+  apiKey: string | null,
+  fetch: typeof globalThis.fetch,
+) =>
   createOpenAICompatible({
     name: "local-ai",
     baseURL: config.baseUrl,
-    // Chromium's stack, so the call follows the same proxy as the rest of the app; the user's extra
-    // request body is merged in on the way out.
-    fetch: withExtraRequestBody(config),
+    fetch: withExtraRequestBody(config, fetch),
     // Endpoints such as a local Ollama need no key; without one no `Authorization` is sent.
     ...(apiKey ? { apiKey } : {}),
   })
@@ -99,20 +102,23 @@ export const DIRECT_CONTEXT_BUDGET = {
  * Merges the user's extra JSON into every model request body: providers expose thinking knobs that
  * are not part of the OpenAI-compatible schema (`thinking_budget`, `enable_thinking`, …).
  */
-const withExtraRequestBody = (config: LocalAIDirectConfig): typeof globalThis.fetch => {
+const withExtraRequestBody = (
+  config: LocalAIDirectConfig,
+  fetch: typeof globalThis.fetch,
+): typeof globalThis.fetch => {
   const extra = parseExtraRequestBody(config.extraRequestBody)
-  if (!extra) return netFetch
+  if (!extra) return fetch
 
   return async (input, init) => {
-    if (typeof init?.body !== "string") return netFetch(input, init)
+    if (typeof init?.body !== "string") return fetch(input, init)
 
     try {
       const body: unknown = JSON.parse(init.body)
-      if (!body || typeof body !== "object" || Array.isArray(body)) return netFetch(input, init)
+      if (!body || typeof body !== "object" || Array.isArray(body)) return fetch(input, init)
 
-      return await netFetch(input, { ...init, body: JSON.stringify({ ...body, ...extra }) })
+      return await fetch(input, { ...init, body: JSON.stringify({ ...body, ...extra }) })
     } catch {
-      return netFetch(input, init)
+      return fetch(input, init)
     }
   }
 }
@@ -139,6 +145,7 @@ const parseExtraRequestBody = (raw: string | null | undefined): Record<string, u
 export const createDirectModel = (params: {
   config: LocalAIDirectConfig
   apiKey: string | null
+  fetch: typeof globalThis.fetch
   requestedModel?: string | null
 }): LanguageModel => {
   const modelId = resolveModelId(params.config, params.requestedModel)
@@ -146,5 +153,5 @@ export const createDirectModel = (params: {
     throw new Error("No model is configured for the direct endpoint")
   }
 
-  return createProvider(params.config, params.apiKey).chatModel(modelId)
+  return createProvider(params.config, params.apiKey, params.fetch).chatModel(modelId)
 }

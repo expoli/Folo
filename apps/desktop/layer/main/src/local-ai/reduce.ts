@@ -7,13 +7,12 @@
  * the answer covers the whole selection — and, because the notes are counted separately, the
  * coverage note can still say what was read in full and what was summarized.
  */
+import { parseJsonLoose } from "@follow/store/ai-local/direct/loose-json"
+import { DEFAULT_REDUCE_SYSTEM_PROMPT, languageName } from "@follow/store/ai-local/direct/prompts"
+import type { DirectCallOptions } from "@follow/store/ai-local/direct/provider"
+import { MAX_OUTPUT_TOKENS } from "@follow/store/ai-local/direct/provider"
 import type { LanguageModel } from "ai"
 import { generateText } from "ai"
-
-import { parseJsonLoose } from "./loose-json"
-import { DEFAULT_REDUCE_SYSTEM_PROMPT, languageName } from "./prompts"
-import type { DirectCallOptions } from "./provider"
-import { MAX_OUTPUT_TOKENS } from "./provider"
 
 /** Entries the pre-pass reads at most; a wider selection stays partly title-only, and says so. */
 export const REDUCE_MAX_ENTRIES = 200

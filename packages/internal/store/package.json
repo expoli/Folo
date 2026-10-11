@@ -115,6 +115,7 @@
     "react": "19.2.8"
   },
   "dependencies": {
+    "@ai-sdk/openai-compatible": "3.0.6",
     "@follow-app/client-sdk": "catalog:",
     "@follow/configs": "workspace:*",
     "@follow/constants": "workspace:*",
@@ -125,6 +126,7 @@
     "@follow/utils": "workspace:*",
     "@tanstack/react-query": "5.103.2",
     "@yornaath/batshit": "0.14.0",
+    "ai": "7.0.109",
     "es-toolkit": "1.52.0",
     "i18next": "26.4.2",
     "immer": "11.1.18",

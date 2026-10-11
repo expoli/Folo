@@ -7,6 +7,10 @@ import {
   normalizeLocalAIBaseUrl,
   resolveLocalAIConfig,
 } from "@follow/store/ai-local/config"
+import {
+  getDirectAIConfig as getSharedDirectAIConfig,
+  normalizeLocalGatewaySettings as normalizeSharedLocalGatewaySettings,
+} from "@follow/store/ai-local/direct/settings"
 import { EventBus } from "@follow/utils/event-bus"
 import { jotaiStore } from "@follow/utils/jotai"
 import { isEqual } from "es-toolkit"
@@ -41,28 +45,12 @@ export const useLocalAIConfig = () => useAtomValue(effectiveLocalAIConfigAtom, a
  * The result is memoised per stored object, because React consumers use it as an effect dependency:
  * a fresh object on every render would make their draft-sync effect revert the user's typing.
  */
-const normalizedSettingsCache = new WeakMap<object, LocalAIGatewaySettings>()
+const desktopLocalGatewayDefaults = () => createDefaultSettings().localGateway
 
 export const normalizeLocalGatewaySettings = (
   stored?: Partial<LocalAIGatewaySettings> | null,
-): LocalAIGatewaySettings => {
-  if (!stored) return createDefaultSettings().localGateway
-
-  const cached = normalizedSettingsCache.get(stored)
-  if (cached) return cached
-
-  const defaults = createDefaultSettings().localGateway
-  const normalized: LocalAIGatewaySettings = {
-    ...defaults,
-    ...stored,
-    // A stored object may carry a partial `directOptions` as well, since the settings atom merges
-    // shallowly.
-    directOptions: { ...defaults.directOptions, ...stored.directOptions },
-  }
-  normalizedSettingsCache.set(stored, normalized)
-
-  return normalized
-}
+): LocalAIGatewaySettings =>
+  normalizeSharedLocalGatewaySettings(stored, desktopLocalGatewayDefaults())
 
 /** Saved local AI settings; settings stored before a field existed fall back to its default, so a
  * legacy object without `mode` / `directModels` still resolves. */
@@ -72,27 +60,7 @@ export const getLocalGatewaySettings = (): LocalAIGatewaySettings =>
 /** Endpoint the direct mode talks to, or `null` while the user has not filled the address in. */
 export const getDirectAIConfig = (
   settings: LocalAIGatewaySettings = getLocalGatewaySettings(),
-): LocalAIDirectConfig | null => {
-  const baseUrl = normalizeLocalAIBaseUrl(settings.directBaseUrl)
-  if (!baseUrl) return null
-
-  const models = (settings.directModels ?? []).filter((model) => model.trim())
-  const options = settings.directOptions ?? createDefaultSettings().localGateway.directOptions
-
-  return {
-    baseUrl,
-    model: settings.directModel?.trim() || models[0] || "",
-    models,
-    // Every knob is optional: what the user left empty keeps the built-in default.
-    maxOutputTokens: options.maxOutputTokens,
-    temperature: options.temperature,
-    reasoningEffort: options.reasoningEffort,
-    extraRequestBody: options.extraRequestBody?.trim() || null,
-    summaryChunkChars: options.summaryChunkChars,
-    translationChunkChars: options.translationChunkChars,
-    translationConcurrency: options.translationConcurrency,
-  }
-}
+): LocalAIDirectConfig | null => getSharedDirectAIConfig(settings, desktopLocalGatewayDefaults())
 
 /** One transport for the lifetime of the window: it reads the settings on every request. */
 const directFetch = createLocalAIDirectFetch(() => getDirectAIConfig())
