@@ -6,10 +6,11 @@ name: 🤖 Build Android APK (gradle)
 # is enough to sideload the app for testing; a distributed or store build needs a real keystore and
 # belongs to upstream's EAS workflow instead.
 #
-# The APK is attached to a **prerelease** tagged `android/latest`, both on purpose:
+# The APK is attached to the rolling **prerelease** tagged `android/latest`; the desktop release
+# workflow also uploads its Windows and Linux installers there for convenient manual downloads.
+# The prerelease and slash-containing tag keep this release outside the desktop update channel:
 #   - a prerelease is invisible to `releases/latest`, which the desktop app reads for its updates
 #   - the slash in the tag keeps electron-updater's release feed regex from matching it at all
-# so publishing an APK here cannot move the desktop update channel.
 #
 # A debug APK would need a running Metro server; this one is a standalone release build.
 on:
@@ -138,16 +139,19 @@ jobs:
           retention-days: 30
 
       # A release asset is the only download that works from a phone without a GitHub login.
-      - name: Publish the APK on a prerelease
+      # Desktop installers are updated independently by release-desktop.yml and remain attached.
+      - name: Publish the APK on the rolling prerelease
         uses: softprops/action-gh-release@v3
         with:
           tag_name: android/latest
-          name: Android APK (latest build)
+          name: Latest builds
           body: |
-            Standalone release APK of the mobile app, signed with the debug keystore for sideloading.
+            Rolling prerelease downloads built from this fork. Platform assets are updated independently.
 
-            - version: `${{ steps.apk.outputs.version }}`
-            - commit: `${{ github.sha }}`
+            The Android APK is a standalone release build signed with the debug keystore for sideloading.
+
+            - Android version: `${{ steps.apk.outputs.version }}`
+            - Android commit: `${{ github.sha }}`
           draft: false
           prerelease: true
           files: apps/mobile/${{ steps.apk.outputs.name }}
