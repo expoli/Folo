@@ -1,6 +1,7 @@
 name: 🚀 Release Desktop
 
-# Publishes this fork's own desktop builds. The app updates itself from these releases.
+# Publishes this fork's own desktop builds plus the current rolling Android APK. The desktop app
+# updates itself from these releases.
 #
 # The tag is a plain version (`v1.16.0`) rather than upstream's `desktop/v<version>`: electron-updater
 # matches releases against the `releases.atom` entries with `/\/tag\/(v?[^/]+)$/`, which a tag
@@ -158,12 +159,17 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Download every platform
+      - name: Download every desktop platform
         uses: actions/download-artifact@v8
         with:
           pattern: desktop-*
           path: release-assets
           merge-multiple: true
+
+      - name: Download the current Android APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download android/latest --pattern 'Folo-*-android.apk' --dir release-assets --clobber
 
       - name: Prepare the release notes
         id: notes
