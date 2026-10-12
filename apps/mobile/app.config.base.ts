@@ -87,7 +87,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     runtimeVersion,
 
     name: "Folo",
-    slug: "follow",
+    slug: "folo-rss-local-ai",
     version: PKG.version,
     orientation: "portrait" as const,
     icon: iconPath,
