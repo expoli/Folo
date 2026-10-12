@@ -5,6 +5,26 @@ const fallbackPrefix = "follow_secure_store_fallback"
 const warnedFallbackKeys = new Set<string>()
 let forceFallback = false
 
+/**
+ * Thrown when a caller refused the plaintext fallback and the OS keychain is not usable. A caller
+ * that keeps a secret must report this instead of storing the secret unencrypted.
+ */
+export class SecureStorageUnavailableError extends Error {
+  constructor() {
+    super("The OS keychain is not available, and storing the value unencrypted was refused")
+    this.name = "SecureStorageUnavailableError"
+  }
+}
+
+export interface SecureStoreOptions {
+  /**
+   * Whether a keychain failure may fall back to the app's own SQLite store. Defaults to `true` for
+   * the callers that keep a session token; a secret passes `false` so it is never kept in
+   * plaintext.
+   */
+  allowInsecureFallback?: boolean
+}
+
 const getFallbackKey = (key: string) => `${fallbackPrefix}:${key}`
 
 const isSecureStoreUnavailable = (error: unknown) => {
@@ -58,9 +78,10 @@ const deleteSecureStoreItem = async (key: string) => {
 }
 
 export const safeSecureStore = {
-  getItem(key: string) {
+  getItem(key: string, options: SecureStoreOptions = {}) {
+    const allowInsecureFallback = options.allowInsecureFallback ?? true
     if (forceFallback) {
-      return getFallbackValue(key)
+      return allowInsecureFallback ? getFallbackValue(key) : null
     }
 
     try {
@@ -72,28 +93,34 @@ export const safeSecureStore = {
       if (isSecureStoreUnavailable(error)) {
         forceFallback = true
         warnFallback("getItem", key, error)
-        return getFallbackValue(key)
+        return allowInsecureFallback ? getFallbackValue(key) : null
       }
 
       throw error
     }
 
-    return getFallbackValue(key)
+    return allowInsecureFallback ? getFallbackValue(key) : null
   },
-  setItem(key: string, value: string) {
+  setItem(key: string, value: string, options: SecureStoreOptions = {}) {
+    const allowInsecureFallback = options.allowInsecureFallback ?? true
     if (forceFallback) {
+      if (!allowInsecureFallback) throw new SecureStorageUnavailableError()
+
       Storage.setItemSync(getFallbackKey(key), value)
       return
     }
 
     try {
       SecureStore.setItem(key, value)
+      // A value that reached the keychain never needs the plaintext copy of an earlier attempt.
       Storage.removeItemSync(getFallbackKey(key))
       return
     } catch (error) {
       if (isSecureStoreUnavailable(error)) {
         forceFallback = true
         warnFallback("setItem", key, error)
+        if (!allowInsecureFallback) throw new SecureStorageUnavailableError()
+
         Storage.setItemSync(getFallbackKey(key), value)
         return
       }

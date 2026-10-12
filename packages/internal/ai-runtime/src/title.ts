@@ -2,14 +2,16 @@ import type { LanguageModel } from "ai"
 import { generateText } from "ai"
 
 import { jsonResponse } from "./http"
+import { MAX_OUTPUT_TOKENS } from "./limits"
 import { DEFAULT_TITLE_SYSTEM_PROMPT, languageName } from "./prompts"
 import type { DirectCallOptions } from "./provider"
-import { MAX_OUTPUT_TOKENS } from "./provider"
 
 /**
  * `POST /ai/summary-title`: Folo's server writes a short title for a chat; with a local model the
- * main process asks the same model instead, so the "generate title" action needs no Folo API.
+ * app (or the gateway) asks the same model instead, so the "generate title" action needs no Folo
+ * API.
  */
+
 /**
  * First words of the conversation, used when the model returns no text at all: a button that does
  * nothing is worse than a title taken from the answer it just wrote.
@@ -45,9 +47,14 @@ export const handleSummaryTitleRequest = async (params: {
   body: Record<string, unknown>
   model: LanguageModel
   call?: DirectCallOptions
+  /** Wording of the title prompt; the gateway lets its environment replace it. */
+  systemPrompt?: string
+  /** Receives one line per request; the calling app prefixes it with its own name. */
+  log?: (line: string) => void
 }) => {
-  const messages = Array.isArray(params.body.messages) ? params.body.messages : []
-  const language = typeof params.body.language === "string" ? params.body.language : null
+  const { body, model, call, systemPrompt, log } = params
+  const messages = Array.isArray(body.messages) ? body.messages : []
+  const language = typeof body.language === "string" ? body.language : null
   const transcript = messages
     .map((message) => {
       const entry = message as { role?: unknown; content?: unknown }
@@ -65,9 +72,9 @@ export const handleSummaryTitleRequest = async (params: {
   }
 
   const { text, reasoning, finishReason, usage } = await generateText({
-    model: params.model,
+    model,
     system: [
-      DEFAULT_TITLE_SYSTEM_PROMPT,
+      systemPrompt ?? DEFAULT_TITLE_SYSTEM_PROMPT,
       language ? `Write the title in ${languageName(language)}.` : "",
     ]
       .filter(Boolean)
@@ -75,17 +82,17 @@ export const handleSummaryTitleRequest = async (params: {
     prompt: transcript,
     // The same budget as every other call: it is a ceiling, not a target, and a smaller one would
     // only cut a reasoning model off before it writes the title.
-    maxOutputTokens: params.call?.maxOutputTokens ?? MAX_OUTPUT_TOKENS,
-    temperature: params.call?.temperature,
-    providerOptions: params.call?.providerOptions,
+    maxOutputTokens: call?.maxOutputTokens ?? MAX_OUTPUT_TOKENS,
+    temperature: call?.temperature,
+    providerOptions: call?.providerOptions,
   })
 
   const generated = cleanTitle(text)
   const title = generated || fallbackTitle(messages)
   // The UI reports a failure when no title comes back, so the log says which case it was: a model
   // that spent its budget thinking, a provider that answers in `reasoning` only, or nothing at all.
-  console.log(
-    `[local-ai] title: ${title ? JSON.stringify(title) : "(empty reply)"}${
+  log?.(
+    `title: ${title ? JSON.stringify(title) : "(empty reply)"}${
       generated
         ? ""
         : ` (fallback) finish=${finishReason ?? "?"} output=${usage?.outputTokens ?? "?"} reasoning=${

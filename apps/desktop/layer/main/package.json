@@ -27,6 +27,7 @@
     "@eneris/push-receiver": "4.4.0",
     "@follow-app/client-sdk": "catalog:",
     "@follow-app/readability": "workspace:*",
+    "@follow/ai-runtime": "workspace:*",
     "@follow/shared": "workspace:*",
     "@follow/store": "workspace:*",
     "@follow/utils": "workspace:*",

@@ -7,12 +7,13 @@
  * the answer covers the whole selection — and, because the notes are counted separately, the
  * coverage note can still say what was read in full and what was summarized.
  */
-import { parseJsonLoose } from "@follow/store/ai-local/direct/loose-json"
-import { DEFAULT_REDUCE_SYSTEM_PROMPT, languageName } from "@follow/store/ai-local/direct/prompts"
-import type { DirectCallOptions } from "@follow/store/ai-local/direct/provider"
-import { MAX_OUTPUT_TOKENS } from "@follow/store/ai-local/direct/provider"
 import type { LanguageModel } from "ai"
 import { generateText } from "ai"
+
+import { MAX_OUTPUT_TOKENS } from "./limits"
+import { parseJsonLoose } from "./loose-json"
+import { DEFAULT_REDUCE_SYSTEM_PROMPT, languageName } from "./prompts"
+import type { DirectCallOptions } from "./provider"
 
 /** Entries the pre-pass reads at most; a wider selection stays partly title-only, and says so. */
 export const REDUCE_MAX_ENTRIES = 200
@@ -27,6 +28,20 @@ export const REDUCE_CONCURRENCY = 3
  * of note) must not be served from the cache as if they were written for this one.
  */
 export const REDUCE_PROMPT_VERSION = 1
+
+/**
+ * Bounds and wording of one reduce pass. Every field has a default here, so the direct mode passes
+ * nothing while the gateway reads its environment (`AI_REDUCE_*`) into them.
+ */
+export interface ReduceOptions {
+  maxEntries?: number
+  batchEntries?: number
+  batchChars?: number
+  /** Batches summarized at the same time; the call options take precedence when set. */
+  concurrency?: number
+  /** Wording of the batch prompt. */
+  systemPrompt?: string
+}
 
 /**
  * The key one note is stored under: the same article, model, language and prompt version reuse it,
@@ -74,14 +89,19 @@ export const textHash = (text: string) => {
 }
 
 /** Greedy batches: the entry count and the text length both stay within one call's budget. */
-export const batchEntries = (entries: ReduceEntry[]): ReduceEntry[][] => {
+export const batchEntries = (
+  entries: ReduceEntry[],
+  options: ReduceOptions = {},
+): ReduceEntry[][] => {
+  const maxBatchEntries = options.batchEntries ?? REDUCE_BATCH_ENTRIES
+  const maxBatchChars = options.batchChars ?? REDUCE_BATCH_CHARS
   const batches: ReduceEntry[][] = []
   let current: ReduceEntry[] = []
   let chars = 0
 
   for (const entry of entries) {
-    const tooMany = current.length >= REDUCE_BATCH_ENTRIES
-    const tooLong = chars + entry.body.length > REDUCE_BATCH_CHARS
+    const tooMany = current.length >= maxBatchEntries
+    const tooLong = chars + entry.body.length > maxBatchChars
     if (current.length > 0 && (tooMany || tooLong)) {
       batches.push(current)
       current = []
@@ -180,18 +200,32 @@ export const summarizeEntries = async (params: {
   cache?: NotesCache
   /** Part of the cache key: the same article answered by another model is another note. */
   modelId?: string
+  /** Batch bounds and prompt wording of this pass. */
+  options?: ReduceOptions
   log?: (line: string) => void
   signal?: AbortSignal
   /** Called after every batch, so a long pre-pass can report how far it is. */
   onProgress?: (done: number, total: number) => void
 }): Promise<ReduceResult> => {
-  const { model, entries, language, call, cache, modelId = "", log, signal, onProgress } = params
+  const {
+    model,
+    entries,
+    language,
+    call,
+    cache,
+    modelId = "",
+    options,
+    log,
+    signal,
+    onProgress,
+  } = params
+  const maxEntries = options?.maxEntries ?? REDUCE_MAX_ENTRIES
   const notes = new Map<number, string>()
   const keyOf = (entry: ReduceEntry) =>
     noteCacheKey({ modelId, language, title: entry.title, body: entry.body })
 
   const pending: ReduceEntry[] = []
-  for (const entry of entries.slice(0, REDUCE_MAX_ENTRIES)) {
+  for (const entry of entries.slice(0, maxEntries)) {
     const cached = cache?.get(keyOf(entry))
     if (cached) {
       notes.set(entry.index, cached)
@@ -201,15 +235,18 @@ export const summarizeEntries = async (params: {
     pending.push(entry)
   }
 
-  const batches = batchEntries(pending)
-  const concurrency = Math.max(1, call?.translationConcurrency ?? REDUCE_CONCURRENCY)
+  const batches = batchEntries(pending, options)
+  const concurrency = Math.max(
+    1,
+    call?.translationConcurrency ?? options?.concurrency ?? REDUCE_CONCURRENCY,
+  )
   let cursor = 0
   let calls = 0
   let failed = 0
 
   // Report what the cache already answered before the first batch, so a fully cached pre-pass still
   // tells the client where it stands.
-  onProgress?.(notes.size, Math.min(entries.length, REDUCE_MAX_ENTRIES))
+  onProgress?.(notes.size, Math.min(entries.length, maxEntries))
 
   const worker = async () => {
     for (;;) {
@@ -223,7 +260,7 @@ export const summarizeEntries = async (params: {
       try {
         const { text } = await generateText({
           model,
-          system: DEFAULT_REDUCE_SYSTEM_PROMPT,
+          system: options?.systemPrompt ?? DEFAULT_REDUCE_SYSTEM_PROMPT,
           prompt: batchPrompt(batch, language),
           maxOutputTokens: call?.maxOutputTokens ?? MAX_OUTPUT_TOKENS,
           temperature: call?.temperature,
@@ -251,18 +288,18 @@ export const summarizeEntries = async (params: {
           // only as a count of articles that got no note.
           const preview = (text ?? "").replace(/\s+/g, " ").slice(0, 160)
           log?.(
-            `[local-ai] reduce: ${batch.length - read.size} of a batch of ${batch.length} got no ` +
+            `reduce: ${batch.length - read.size} of a batch of ${batch.length} got no ` +
               `note${preview ? ` — the reply was “${preview}”` : " (the reply was empty)"}`,
           )
         }
 
-        onProgress?.(notes.size, Math.min(entries.length, REDUCE_MAX_ENTRIES))
+        onProgress?.(notes.size, Math.min(entries.length, maxEntries))
       } catch (error) {
         // One unusable call must not lose the rest: those articles stay listed by title, and the
         // coverage note names them as such.
         failed += batch.length
         log?.(
-          `[local-ai] reduce: a batch of ${batch.length} failed (${
+          `reduce: a batch of ${batch.length} failed (${
             error instanceof Error ? error.message : String(error)
           })`,
         )
@@ -278,6 +315,6 @@ export const summarizeEntries = async (params: {
     notes,
     failed,
     calls,
-    cached: Math.min(entries.length, REDUCE_MAX_ENTRIES) - pending.length,
+    cached: Math.min(entries.length, maxEntries) - pending.length,
   }
 }

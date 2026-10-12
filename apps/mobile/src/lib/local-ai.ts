@@ -1,21 +1,25 @@
+import { resetModelListCache } from "@follow/ai-runtime/config"
+import { routeLocalAIRequest } from "@follow/ai-runtime/router"
 import type { LocalAIGatewaySettings } from "@follow/shared/settings/interface"
-import type { LocalAIDirectConfig } from "@follow/shared/settings/local-ai"
+import type { LocalAIDirectConfig, LocalAISetApiKeyResult } from "@follow/shared/settings/local-ai"
 import { LOCAL_AI_DIRECT_ORIGIN } from "@follow/shared/settings/local-ai"
 import type { LocalAIConfig } from "@follow/store/ai-local/config"
 import { configureLocalAI, resolveLocalAIConfig } from "@follow/store/ai-local/config"
-import { resetModelListCache } from "@follow/store/ai-local/direct/config"
-import { routeLocalAIRequest } from "@follow/store/ai-local/direct/routes"
 import {
-  directConfigFingerprint,
   getDirectAIConfig,
+  localAIRuntimeFingerprint,
   normalizeLocalGatewaySettings,
-} from "@follow/store/ai-local/direct/settings"
+} from "@follow/store/ai-local/settings"
 import { summaryActions } from "@follow/store/summary/store"
 import { translationActions } from "@follow/store/translation/store"
 import { EventBus } from "@follow/utils/event-bus"
 
-import { createDefaultAISettings, getAISettings } from "@/src/atoms/settings/ai"
-import { safeSecureStore } from "@/src/lib/secure-store"
+import {
+  createDefaultAISettings,
+  getAISettings,
+  setLocalAIGatewaySetting,
+} from "@/src/atoms/settings/ai"
+import { safeSecureStore, SecureStorageUnavailableError } from "@/src/lib/secure-store"
 import { toast } from "@/src/lib/toast"
 
 /**
@@ -23,7 +27,7 @@ import { toast } from "@/src/lib/toast"
  *
  * `direct` mode is the mode the in-app settings configure: the app itself calls an
  * OpenAI-compatible endpoint, without a gateway process in between. The shared direct core answers
- * the `/ai/*` paths in-process (see `@follow/store/ai-local/direct/routes`), so the store layer
+ * the `/ai/*` paths in-process (see `@follow/ai-runtime/router`), so the store layer
  * that asks for a summary or a translation does not know which mode is running.
  *
  * The address, the models and the tuning live in the `ai` settings; the API key is kept in the
@@ -33,19 +37,46 @@ import { toast } from "@/src/lib/toast"
 /** Where the API key of the direct endpoint is kept (encrypted by the OS keychain). */
 export const DIRECT_API_KEY_STORE_KEY = "follow_local_ai_direct_api_key"
 
+/**
+ * Reads the key from the OS keychain only. When the keychain is not usable the app keeps no key at
+ * all — a plaintext copy in the app's own store would be readable by anything on the device.
+ */
 export const getDirectApiKey = () =>
-  safeSecureStore.getItem(DIRECT_API_KEY_STORE_KEY)?.trim() || null
+  safeSecureStore.getItem(DIRECT_API_KEY_STORE_KEY, { allowInsecureFallback: false })?.trim() ||
+  null
 
-export const setDirectApiKey = (apiKey: string) => {
+/**
+ * Saves (or clears) the key. A failure is reported instead of thrown, so the settings screen can
+ * say why nothing was stored; it is never caused by writing the key unencrypted.
+ */
+export const setDirectApiKey = (apiKey: string): LocalAISetApiKeyResult => {
   const trimmed = apiKey.trim()
-  if (trimmed) {
-    safeSecureStore.setItem(DIRECT_API_KEY_STORE_KEY, trimmed)
-  } else {
+
+  if (!trimmed) {
     safeSecureStore.removeItem(DIRECT_API_KEY_STORE_KEY)
+    // A rejected key may sit in the model-list cache; the user has just replaced it.
+    resetModelListCache()
+    return { ok: true, hasApiKey: false }
+  }
+
+  try {
+    safeSecureStore.setItem(DIRECT_API_KEY_STORE_KEY, trimmed, { allowInsecureFallback: false })
+  } catch (error) {
+    const unavailable = error instanceof SecureStorageUnavailableError
+    return {
+      ok: false,
+      reason: unavailable ? "encryption-unavailable" : "write-failed",
+      message: unavailable
+        ? "This device has no usable keychain, so the key was not stored (it would have been written unencrypted). Set up a screen lock / passcode and try again."
+        : error instanceof Error
+          ? error.message
+          : "Could not write the API key",
+    }
   }
 
   // A rejected key may sit in the model-list cache; the user has just replaced it.
   resetModelListCache()
+  return { ok: true, hasApiKey: true }
 }
 
 const defaultLocalGatewaySettings = () => createDefaultAISettings().localGateway
@@ -136,14 +167,28 @@ const directFetch = createLocalAIDirectFetch(() => getDirectConfig())
 
 /**
  * Cached summaries and translations carry the words of the model that wrote them, and they stay for
- * a week. A changed endpoint or model therefore drops them; turning local AI off keeps them, so a
- * free account does not lose text it could no longer regenerate.
+ * a week. A changed runtime (another endpoint, another model, the other mode) therefore drops them;
+ * turning local AI off keeps them, so a free account does not lose text it could no longer
+ * regenerate.
  */
-let lastDirectFingerprint: string | null = null
+let lastRuntimeFingerprint: string | null = null
 
-const dropCachedAITexts = () => {
-  void translationActions.reset()
-  void summaryActions.reset()
+/**
+ * Resets start immediately — a caller that reads a cached answer right after the switch must not see
+ * the old one — and are chained afterwards, so a failing reset cannot become an unhandled rejection
+ * and a second switch still waits for the first one.
+ */
+let cachedTextReset: Promise<void> = Promise.resolve()
+const dropCachedAITexts = (): Promise<void> => {
+  const dropped = Promise.all([translationActions.reset(), summaryActions.reset()]).then(
+    () => undefined,
+    (error: unknown) => {
+      console.error("[local-ai] could not drop the cached AI text:", error)
+    },
+  )
+  cachedTextReset = Promise.all([cachedTextReset, dropped]).then(() => undefined)
+
+  return cachedTextReset
 }
 
 /**
@@ -157,23 +202,38 @@ export const applyLocalAISettings = (): LocalAIConfig => {
   const settings = getLocalGatewaySettings()
   const resolved = resolveLocalAIConfig(settings)
 
-  const fingerprint = directConfigFingerprint(
+  // Both runtimes are fingerprinted: a changed gateway address makes the cached text just as stale
+  // as a changed model does.
+  const fingerprint = localAIRuntimeFingerprint(
+    resolved,
     resolved?.mode === "direct" ? getDirectConfig(settings) : null,
   )
   if (fingerprint !== null) {
-    if (lastDirectFingerprint !== null && fingerprint !== lastDirectFingerprint) {
-      dropCachedAITexts()
+    if (lastRuntimeFingerprint !== null && fingerprint !== lastRuntimeFingerprint) {
+      void dropCachedAITexts()
     }
 
-    lastDirectFingerprint = fingerprint
+    lastRuntimeFingerprint = fingerprint
   }
 
   // A gateway is called with the runtime's own fetch; only the direct mode installs a transport.
   return configureLocalAI({
     ...resolved,
+    // The fingerprint is what tells the store that the endpoint or model changed: `baseUrl` is the
+    // same internal origin in `direct` mode whatever the endpoint is.
+    fingerprint,
     fetch: resolved?.mode === "direct" ? directFetch : undefined,
     onError: reportLocalAIError,
   })
+}
+
+/**
+ * Turns local AI on or off. Only `enabled` is written: the mode the user configured (a gateway or a
+ * direct endpoint) is what local AI runs on, and the switch must not repoint it.
+ */
+export const setLocalAIEnabled = (enabled: boolean) => {
+  setLocalAIGatewaySetting({ enabled })
+  applyLocalAISettings()
 }
 
 /** Re-applies the settings after the user edits them. Returns the unsubscribe function. */

@@ -30,11 +30,17 @@ LM Studio, Ollama, LiteLLM, an internal model gateway, …
 ## 1. Run the gateway
 
 ```bash
+pnpm install                # once, from the repository root
 cd tools/ai-gateway
-npm install                 # ai@7.0.109 + @ai-sdk/openai@4.0.9 (pinned to the client's AI SDK)
 cp .env.example .env        # then edit AI_BASE_URL / AI_API_KEY / AI_MODEL
-npm start                   # http://127.0.0.1:8788
+pnpm start                  # http://127.0.0.1:8788
 ```
+
+`tools/ai-gateway` is a package of this pnpm workspace, and the shared prompts / summary /
+translation / chat-context logic comes from `@follow/ai-runtime`. `pnpm start` therefore bundles
+`server.mjs` and those TypeScript sources into `dist/server.mjs` (esbuild, target Node 22) and runs
+that artifact; `pnpm build` bundles alone, and `pnpm mock-upstream` / `pnpm check` work against the
+built artifact as before.
 
 `.env` is loaded by `server.mjs` itself (`process.loadEnvFile`), so there is no `source` / `export`
 step — it behaves the same in bash, zsh and fish. Real environment variables still take precedence
@@ -121,41 +127,43 @@ gateway renders as a `Coverage: …` note before the entries: a summary of "toda
 it saw 20 of 137 articles, and entries marked `(no text attached)` must not be summarised as if
 their content had been read.
 
-**Both modes close that gap** with a `reduce` pre-pass: a timeline summary sends the text of the
-articles the prompt cannot carry as `body`, the receiving side summarizes them in batches (8
-articles or 16 000 characters per call, three at a time, notes reused per article/model/language)
-and attaches the notes to the prompt. The coverage note then reads `… 20 with text, 78 summarised
-from their text …`, and those articles count as read instead of listed by title. The gateway keeps
-its copy in `server.mjs` (tuned by the `AI_REDUCE_*` variables above), the app keeps its own in
-`apps/desktop/layer/main/src/local-ai/reduce.ts` (tuned in Settings → AI → Advanced).
+**Both modes close that gap** with the shared `@follow/ai-runtime` `reduce` pre-pass: a timeline
+summary sends the text of the articles the prompt cannot carry as `body`, the receiving side
+summarizes them in batches (8 articles or 16 000 characters per call, three at a time, notes reused
+per article/model/language) and attaches the notes to the prompt. The coverage note then reads
+`… 20 with text, 78 summarised from their text …`, and those articles count as read instead of
+listed by title. The gateway reads its tuning from the `AI_REDUCE_*` variables above; direct mode
+reads the equivalent values from Settings → AI → Advanced.
 
 **Built-in direct mode also fetches what it reads.** A summary is only as good as the text it gets,
 and an entry that was never opened carries the excerpt its feed published. When the client marks a
 summary (`fetchBodies`), the app fetches the pages of the entries whose text is shorter than 1 200
 characters — up to 40 of them, four at a time, 12 s per page — parses them with
-`@follow-app/readability` through Chromium's network stack, and uses the article in place of the
-excerpt (a verbatim entry keeps its place in the prompt, cut to its share of the budget). The pass
-is best effort: a page that cannot be read leaves its entry as it was, the answer still streams,
-and the log line `[local-ai] fetch: x of y article text(s) read (n unreachable)` says what happened.
-The gateway does not fetch pages yet — it sends what the client attached.
+`@follow-app/readability`, and uses the article in place of the excerpt (a verbatim entry keeps its
+place in the prompt, cut to its share of the budget). The pass is best effort: a page that cannot be
+read leaves its entry as it was, the answer still streams, and the log line
+`[local-ai] fetch: x of y article text(s) read (n unreachable)` says what happened. The gateway does
+not fetch pages — it uses what the client attached.
 
-That pass is the only place where the app fetches a URL **without a user asking for that page**: the
-URLs come from the feeds, up to 40 per request, through Chromium's network stack and therefore with
-the session's cookies, and the parsed text is then sent to the configured model endpoint — including
-when the URL points at an intranet or loopback host. The reader does the same fetch when a page is
-opened, but only then. Restricting the hosts this pass may touch (or making it opt-in per request)
-is a deliberate decision still open; nothing outside the model request is stored.
+Feed URLs are untrusted. The article pass therefore accepts only public HTTP(S) destinations, blocks
+loopback, private, link-local, CGNAT and cloud-metadata address ranges, and validates every redirect
+hop. Each connection is pinned to the address that passed validation while preserving the original
+Host and TLS server name, which closes the DNS-rebinding gap. It uses a cookie-free Node transport;
+Chromium session cookies are never attached. Because address pinning is incompatible with Chromium's
+proxy resolver, this pass does not use the app proxy and falls back to the feed excerpt when a page
+cannot be reached. Parsed text is sent only to the configured model endpoint and is not otherwise
+stored.
 
 ## 3. Verify
 
 ```bash
 cd tools/ai-gateway
 node test/mock-openai.mjs &                                   # deterministic fake upstream :8799
-AI_BASE_URL=http://127.0.0.1:8799/v1 AI_API_KEY=mock node server.mjs &
-npm run check                                                 # exercises every endpoint
+AI_BASE_URL=http://127.0.0.1:8799/v1 AI_API_KEY=mock pnpm start &
+pnpm check                                                    # exercises every endpoint
 ```
 
-`npm run check` parses the chat stream with the AI SDK's `uiMessageChunkSchema` — the same parser
+`pnpm check` parses the chat stream with the AI SDK's `uiMessageChunkSchema` — the same parser
 `HttpChatTransport` uses in the app — so a green run means the desktop/mobile client can consume
 the gateway.
 
@@ -167,7 +175,8 @@ the gateway.
 | `GET`  | `/ai/chat/:id/stream`   | –                                                                                                | always `204` (no server-side chat history to resume)                        |
 | `GET`  | `/ai/chat/config`       | –                                                                                                | `{ defaultModel, availableModels, availableModelsMenu, localAIContext, … }` |
 | `POST` | `/ai/summary`           | `{ entryId, language, target, title, content }`                                                  | `{ code: 0, data: string \| null }`                                         |
-| `POST` | `/ai/translation/batch` | `{ entries: [{ id, title, description, content, readabilityContent }], language, fields, mode }` | NDJSON, one `{ id, data }` line per entry                                   |
+| `POST` | `/ai/summary-title`     | `{ messages }`                                                                                   | `{ code: 0, data: string }`                                                 |
+| `POST` | `/ai/translation/batch` | `{ entries: [{ id, title, description, content, readabilityContent }], language, fields, mode }` | NDJSON `{ id, data }` rows plus an optional terminal `{ failures }` row     |
 | `GET`  | `/health`               | `?probe=1` to also call the model once                                                           | `{ ok, upstream, defaultModel, models, probe? }`                            |
 
 All POST bodies are JSON; `Content-Type` of the chat response must stay `text/event-stream` — the
@@ -197,24 +206,24 @@ rejected"). Plain `GET /health` stays instant and never touches the model.
 ## Relationship to the app's built-in direct mode
 
 The client also ships a **direct** mode (`Settings → AI → Connection mode → Direct connection`). It
-speaks the very same `/ai/*` contract, but the provider adapter runs inside the Electron main
-process instead of this Node gateway: the model prompts, the chunking limits and the
-`localAIContext` budget in `apps/desktop/layer/main/src/local-ai/` are copied from `server.mjs` on
-purpose, so the two paths can be compared line by line.
+speaks the same `/ai/*` contract, but the provider adapter runs inside the Electron main process
+instead of this Node gateway. Both adapters consume prompts, chunking, context budgets, summary,
+title, translation and reduce behavior from `@follow/ai-runtime`; platform code only supplies
+configuration, model resolution, transport, credentials and persistence.
 
 |                                                                                   | this gateway                                                   | built-in direct mode                                                                                      |
 | --------------------------------------------------------------------------------- | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | Where it runs                                                                     | separate Node process (also usable from the mobile app)        | Electron main process                                                                                     |
 | Configuration                                                                     | `.env` + `GATEWAY_TOKEN`                                       | `Settings → AI` (address and model list stay on the device, the API key is encrypted with the OS keyring) |
 | Endpoint                                                                          | `AI_BASE_URL`                                                  | one OpenAI-compatible endpoint per install                                                                |
-| Extra tuning (`AI_SUMMARY_CHUNK_CHARS`, `AI_HEADERS`, translation concurrency, …) | yes                                                            | no: the defaults are compiled in                                                                          |
-| Wide selections (a summary of a whole day)                                        | summarized into notes first (`reduce` pre-pass)                | same pre-pass, with the knobs in Settings → AI → Advanced                                                 |
-| Bodies of unopened articles                                                       | whatever the client attached                                   | fetched and parsed first (`@follow-app/readability`, best effort, bounded)                                |
+| Extra tuning (`AI_SUMMARY_CHUNK_CHARS`, `AI_HEADERS`, translation concurrency, …) | environment variables; includes custom headers                 | Settings → AI → Advanced; no arbitrary headers                                                            |
+| Wide selections (a summary of a whole day)                                        | summarized into notes first (`reduce` pre-pass)                | same shared pre-pass, with the knobs in Settings → AI → Advanced                                          |
+| Bodies of unopened articles                                                       | whatever the client attached                                   | fetched and parsed first (`@follow-app/readability`, guarded and bounded)                                 |
 | Translation delivery                                                              | NDJSON streamed line by line, so entries appear as they finish | buffered: IPC answers a batch in one piece, so the translations appear together                           |
-| System proxy                                                                      | follows `HTTP(S)_PROXY` of its shell                           | follows the same proxy as the rest of the app (Chromium's `net.fetch`)                                    |
+| System proxy                                                                      | follows `HTTP(S)_PROXY` of its shell                           | model calls use Chromium proxy settings; guarded article reads use a pinned Node connection without proxy |
 
-Keep `server.mjs` as the reference: it stays the more configurable of the two, and a behaviour
-change there has to be mirrored in the direct mode (and vice versa) to keep them interchangeable.
+`@follow/ai-runtime` is the behavioral source of truth. Changes to shared prompts, limits or model
+orchestration belong there; `server.mjs`, Electron main and mobile remain thin platform adapters.
 
 ## Limits & caveats
 
@@ -226,8 +235,8 @@ change there has to be mirrored in the direct mode (and vice versa) to keep them
   timeline entries a `<mention-date>` window points at and the trending feed catalogue for
   "Recommend feeds", but anything else that needs server-side tools (feed search, MCP, memory)
   still cannot work locally.
-- **Auto-generated chat titles** arrive as a `data-generated-title` chunk from Folo's server and are
-  not implemented here — chats keep their default/edited title.
+- **Auto-generated chat titles** use the shared `/ai/summary-title` implementation. They do not
+  depend on Folo's hosted AI service.
 - **Stream resumption** is a no-op (`204`): restarting the app mid-answer cannot continue the
   answer, it just stops.
 - **Chat history stays local**: sessions started against the gateway are never marked as synced and

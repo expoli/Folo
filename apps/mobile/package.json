@@ -32,6 +32,7 @@
     "@expo/metro-runtime": "57.0.16",
     "@expo/react-native-action-sheet": "4.1.1",
     "@follow-app/client-sdk": "catalog:",
+    "@follow/ai-runtime": "workspace:*",
     "@follow/components": "workspace:*",
     "@follow/constants": "workspace:*",
     "@follow/database": "workspace:*",

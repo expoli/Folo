@@ -2,15 +2,32 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
 import type { LocalAIDirectConfig } from "@follow/shared/settings/local-ai"
 import type { LanguageModel } from "ai"
 
-/**
- * Output cap of one model call, matching `AI_MAX_OUTPUT_TOKENS`' default in the gateway. It has to
- * cover a reasoning model's thinking: a cap that the reasoning consumes leaves an empty answer.
- */
-export const MAX_OUTPUT_TOKENS = 8192
+import { badRequest } from "./errors"
+import {
+  boundedNumber,
+  clampedNumber,
+  MAX_CHUNK_CHARS,
+  MAX_CONCURRENCY,
+  MAX_OUTPUT_TOKENS,
+  MAX_OUTPUT_TOKENS_LIMIT,
+  MAX_TEMPERATURE,
+  MIN_CHUNK_CHARS,
+} from "./limits"
+
+/** Numeric defaults and ceilings of one call; they live in `./limits` so the gateway can reuse them. */
+export {
+  MAX_CHUNK_CHARS,
+  MAX_CONCURRENCY,
+  MAX_OUTPUT_TOKENS,
+  MAX_OUTPUT_TOKENS_LIMIT,
+  MAX_TEMPERATURE,
+  MIN_CHUNK_CHARS,
+}
 
 /** Everything a direct-model call may be tuned with; absent fields keep the built-in defaults. */
 export interface DirectCallOptions {
   maxOutputTokens: number
+  /** `0` is a meaningful value, not a missing one, so it survives unchanged. */
   temperature?: number
   providerOptions?: Record<string, Record<string, string | number | boolean>>
   /** Chunk size of long-article summary calls. */
@@ -23,8 +40,9 @@ export interface DirectCallOptions {
 
 /** Reads the knobs of one request; the settings leave a field empty to keep the default. */
 export const directCallOptions = (config: LocalAIDirectConfig): DirectCallOptions => ({
-  maxOutputTokens: positive(config.maxOutputTokens) ?? MAX_OUTPUT_TOKENS,
-  temperature: finite(config.temperature),
+  maxOutputTokens:
+    boundedNumber(config.maxOutputTokens, 1, MAX_OUTPUT_TOKENS_LIMIT) ?? MAX_OUTPUT_TOKENS,
+  temperature: clampedNumber(config.temperature, 0, MAX_TEMPERATURE),
   // `reasoningEffort` is a standard option of the OpenAI-compatible provider, so the thinking
   // budget travels with the call instead of being injected into the body by hand. The key is the
   // provider's settings name in camel case, which is what the SDK looks for (`local-ai` is
@@ -32,16 +50,14 @@ export const directCallOptions = (config: LocalAIDirectConfig): DirectCallOption
   providerOptions: config.reasoningEffort
     ? { localAi: { reasoningEffort: config.reasoningEffort } }
     : undefined,
-  summaryChunkChars: positive(config.summaryChunkChars),
-  translationChunkChars: positive(config.translationChunkChars),
-  translationConcurrency: positive(config.translationConcurrency),
+  summaryChunkChars: boundedNumber(config.summaryChunkChars, MIN_CHUNK_CHARS, MAX_CHUNK_CHARS),
+  translationChunkChars: boundedNumber(
+    config.translationChunkChars,
+    MIN_CHUNK_CHARS,
+    MAX_CHUNK_CHARS,
+  ),
+  translationConcurrency: boundedNumber(config.translationConcurrency, 1, MAX_CONCURRENCY),
 })
-
-const positive = (value: number | null | undefined) =>
-  typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined
-
-const finite = (value: number | null | undefined) =>
-  typeof value === "number" && Number.isFinite(value) ? value : undefined
 
 /**
  * Talks to the OpenAI-compatible endpoint the user configured: OpenAI, OpenRouter, Vercel AI
@@ -98,6 +114,13 @@ export const DIRECT_CONTEXT_BUDGET = {
   maxTotalChars: 60_000,
 }
 
+/** How much article text a caller may attach to one chat request. */
+export interface LocalAIContextBudget {
+  maxEntries: number
+  maxCharsPerEntry: number
+  maxTotalChars: number
+}
+
 /**
  * Merges the user's extra JSON into every model request body: providers expose thinking knobs that
  * are not part of the OpenAI-compatible schema (`thinking_budget`, `enable_thinking`, …).
@@ -141,7 +164,12 @@ const parseExtraRequestBody = (raw: string | null | undefined): Record<string, u
   }
 }
 
-/** Model handle for one request; throws when the user has not configured a model yet. */
+/**
+ * Model handle for one request; throws when the user has not configured a model yet.
+ *
+ * A platform that does not talk to an OpenAI-compatible endpoint (the self-hosted gateway uses
+ * `@ai-sdk/openai`) injects its own factory instead of calling this one.
+ */
 export const createDirectModel = (params: {
   config: LocalAIDirectConfig
   apiKey: string | null
@@ -150,8 +178,17 @@ export const createDirectModel = (params: {
 }): LanguageModel => {
   const modelId = resolveModelId(params.config, params.requestedModel)
   if (!modelId) {
-    throw new Error("No model is configured for the direct endpoint")
+    // A request problem, not an upstream failure: the settings need a model before anything runs.
+    throw badRequest("No model is configured for the direct endpoint")
   }
 
   return createProvider(params.config, params.apiKey, params.fetch).chatModel(modelId)
 }
+
+/** How a caller turns a request into a model handle, so a platform can bring its own provider. */
+export type LanguageModelFactory = (params: {
+  config: LocalAIDirectConfig
+  apiKey: string | null
+  fetch: typeof globalThis.fetch
+  requestedModel?: string | null
+}) => LanguageModel

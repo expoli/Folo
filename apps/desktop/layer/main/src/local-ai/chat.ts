@@ -1,11 +1,22 @@
-import type { LocalAIDirectConfig } from "@follow/shared/settings/local-ai"
-import { DEFAULT_CHAT_SYSTEM_PROMPT } from "@follow/store/ai-local/direct/prompts"
+import { reduceChatContext } from "@follow/ai-runtime/chat"
+import type { LocalAIContext } from "@follow/ai-runtime/context"
+import {
+  buildChatSystemPrompt,
+  describeChatContext,
+  formatLocalContext,
+  toModelMessages,
+} from "@follow/ai-runtime/context"
+import { errorMessage, statusForError } from "@follow/ai-runtime/errors"
+import { jsonResponse } from "@follow/ai-runtime/http"
+import { DEFAULT_CHAT_SYSTEM_PROMPT } from "@follow/ai-runtime/prompts"
 import {
   createDirectModel,
   DIRECT_CONTEXT_BUDGET,
   directCallOptions,
   resolveModelId,
-} from "@follow/store/ai-local/direct/provider"
+} from "@follow/ai-runtime/provider"
+import { noteCacheKey } from "@follow/ai-runtime/reduce"
+import type { LocalAIDirectConfig } from "@follow/shared/settings/local-ai"
 import { createUIMessageStream, createUIMessageStreamResponse, streamText } from "ai"
 import { app } from "electron"
 import { join } from "pathe"
@@ -17,23 +28,10 @@ import {
   fetchArticleTexts,
   promptText,
 } from "./article-text"
-import type { LocalAIContext } from "./context"
-import {
-  applyEntryNotes,
-  buildChatSystemPrompt,
-  describeChatContext,
-  formatLocalContext,
-  pendingEntryTexts,
-  toModelMessages,
-} from "./context"
-import { jsonResponse, netFetch } from "./http"
+import { netFetch } from "./http"
 import type { NotesCache } from "./notes-cache"
 import { createNotesCache } from "./notes-cache"
-import { noteCacheKey, summarizeEntries } from "./reduce"
 
-/** Longest note attached per article, and for all notes together: the prompt still has a size. */
-const NOTES_ENTRY_CHARS = 600
-const NOTES_TOTAL_CHARS = 30_000
 const NOTES_CACHE_FILE = "local-ai-notes.json"
 
 let notesCache: NotesCache | undefined
@@ -71,6 +69,10 @@ interface ChatRequestBody {
 /**
  * Answers `POST /ai/chat` with an AI SDK UI message stream, the same shape `HttpChatTransport`
  * expects from Folo's own API and from a self-hosted gateway.
+ *
+ * The prompt itself (context, notes pre-pass, coverage) comes from `@follow/ai-runtime`; what stays
+ * here is what only this process can do: the API key custody, Chromium's network stack, the
+ * encrypted notes file and the IPC stream bridge.
  */
 export const createChatStreamResponse = async (params: {
   body: ChatRequestBody
@@ -88,6 +90,9 @@ export const createChatStreamResponse = async (params: {
   const requestedModel = typeof body.model === "string" ? body.model : null
   const language = typeof body.language === "string" ? body.language : null
   const call = directCallOptions(config)
+  // The model that actually runs, not the one the client asked for: a requested model outside the
+  // configured list silently falls back, and its notes must not be reused as the other's.
+  const modelId = resolveModelId(config, requestedModel) || requestedModel || config.model
 
   console.log(
     `[local-ai] chat: model=${requestedModel ?? config.model} messages=${messages.length} ` +
@@ -101,21 +106,17 @@ export const createChatStreamResponse = async (params: {
   try {
     model = createDirectModel({ config, apiKey, fetch: netFetch, requestedModel })
   } catch (error) {
-    return jsonResponse(400, { error: error instanceof Error ? error.message : String(error) })
+    return jsonResponse(statusForError(error), {
+      error: errorMessage(error, "No model is configured for the direct endpoint"),
+    })
   }
 
-  // A selection too wide for the prompt arrives with the texts of the extra articles; summarize
-  // them first, so the answer covers the whole selection instead of its first twenty articles.
-  // The pre-pass takes a while on a busy day, so the client hears how far it is while it runs.
   const stream = createUIMessageStream({
     // Both streams report their model errors the same way: the inner one would otherwise answer
     // with the SDK's generic "An error occurred.".
     onError: streamError,
     execute: async ({ writer }) => {
       let context = body.localAIContext ?? null
-      // The model that actually runs, not the one the client asked for: a requested model outside
-      // the configured list silently falls back, and its notes must not be reused as the other's.
-      const modelId = resolveModelId(config, requestedModel) || requestedModel || config.model
       const notes = getNotesCache()
 
       // A summary is only as good as what it reads. The client marks the requests whose articles
@@ -144,7 +145,7 @@ export const createChatStreamResponse = async (params: {
             // Passed in rather than defaulted, so the fetcher of one request is one visible thing.
             fetchText: fetchArticleText,
             signal: abortSignal,
-            log: console.log,
+            log: (line) => console.log(`[local-ai] ${line}`),
             onProgress: (done, total) => {
               writer.write({
                 type: "data-reduce-progress",
@@ -197,59 +198,26 @@ export const createChatStreamResponse = async (params: {
         }
       }
 
-      const pending = pendingEntryTexts(context)
-      if (pending.length > 0) {
-        const startedAt = Date.now()
-        console.log(
-          `[local-ai] reduce: summarizing ${pending.length} article(s) the prompt cannot carry…`,
-        )
-        const reduced = await summarizeEntries({
-          model,
-          entries: pending,
-          language,
-          call,
-          cache: notes,
-          // The model that actually runs, not the one the client asked for: a requested model
-          // outside the configured list silently falls back, and its notes must not be reused as
-          // the other's.
-          modelId,
-          log: console.log,
-          signal: abortSignal,
-          onProgress: (done, total) => {
-            // One id, so every update replaces the previous line instead of stacking a part per batch.
-            writer.write({
-              type: "data-reduce-progress",
-              id: "reduce-progress",
-              data: { phase: "summarise", done, total },
-            })
-          },
-        })
+      const reduced = await reduceChatContext({
+        context,
+        model,
+        modelId,
+        language,
+        call,
+        notes,
+        log: (line) => console.log(`[local-ai] ${line}`),
+        signal: abortSignal,
+        onProgress: (done, total) => {
+          // One id, so every update replaces the previous line instead of stacking a part per batch.
+          writer.write({
+            type: "data-reduce-progress",
+            id: "reduce-progress",
+            data: { phase: "summarise", done, total },
+          })
+        },
+      })
 
-        // The notes are attached in the order of the entries (the more relevant ones first), so a
-        // day too wide even for the note budget keeps a truthful, deterministic cut.
-        const attached = new Map<number, string>()
-        let noteChars = 0
-        for (const [index, note] of [...reduced.notes.entries()].sort((a, b) => a[0] - b[0])) {
-          const trimmed = note.length > NOTES_ENTRY_CHARS ? note.slice(0, NOTES_ENTRY_CHARS) : note
-          if (noteChars + trimmed.length > NOTES_TOTAL_CHARS) break
-
-          attached.set(index, trimmed)
-          noteChars += trimmed.length
-        }
-
-        context = applyEntryNotes(context, attached)
-        const dropped = reduced.notes.size - attached.size
-        console.log(
-          `[local-ai] reduce: ${attached.size} of ${pending.length} entrie(s) summarised in ` +
-            `${reduced.calls} call(s) (${reduced.cached} cached${
-              reduced.failed > 0 ? `, ${reduced.failed} failed` : ""
-            }${dropped > 0 ? `, ${dropped} over the note budget` : ""}) → ${noteChars} note chars in ${
-              Date.now() - startedAt
-            }ms`,
-        )
-      }
-
-      const localContext = formatLocalContext(context)
+      const localContext = formatLocalContext(reduced.context)
       if (localContext === "") {
         console.warn(
           "[local-ai] chat: no localAIContext arrived, so the model cannot see the Folo entries " +

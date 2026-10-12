@@ -21,6 +21,20 @@ const modelListCache = new Map<string, { at: number; ttl: number; result: ModelL
 /** Keeps test cases independent from each other. */
 export const resetModelListCache = () => modelListCache.clear()
 
+/**
+ * Cheap, stable fingerprint of an API key: the cache is keyed by "which key answered this", but a
+ * raw key must never be held in memory (or in a log) on its way to a cached result.
+ */
+const keyFingerprint = (apiKey: string) => {
+  let hash = 2166136261
+  for (let index = 0; index < apiKey.length; index += 1) {
+    hash ^= apiKey.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+
+  return (hash >>> 0).toString(16)
+}
+
 /** Reads the OpenAI `{ data: [{ id }] }` model list, tolerating plain id arrays too. */
 export const parseModelIds = (payload: unknown): string[] => {
   const list = Array.isArray(payload)
@@ -49,13 +63,17 @@ const modelListUrl = (baseUrl: string) => `${baseUrl.replace(/\/+$/, "")}/models
  * Asks the endpoint for its model list. A rejected key is reported as such, so the settings UI can
  * tell "wrong API key" apart from "this endpoint has no `/models` route" (the latter falls back to
  * the models the user typed in).
+ *
+ * The cached entry is keyed by the endpoint *and* a fingerprint of the key: a draft probe with a
+ * corrected key must not read the rejection of the previous one. A rejection is also remembered for
+ * the short failure window only, so fixing a key takes effect on the next tap.
  */
 export const fetchUpstreamModelIds = async (
   config: LocalAIDirectConfig,
   apiKey: string | null,
   fetch: typeof globalThis.fetch,
 ): Promise<ModelListResult> => {
-  const cacheKey = `${modelListUrl(config.baseUrl)}|${apiKey ? 1 : 0}`
+  const cacheKey = `${modelListUrl(config.baseUrl)}|${apiKey ? keyFingerprint(apiKey) : ""}`
   const cached = modelListCache.get(cacheKey)
   if (cached && Date.now() - cached.at < cached.ttl) return cached.result
 
@@ -71,10 +89,10 @@ export const fetchUpstreamModelIds = async (
     })
 
     if (response.status === 401 || response.status === 403) {
-      return remember({ ids: [], rejected: true }, MODEL_LIST_CACHE_TTL_MS)
+      return remember({ ids: [], rejected: true }, MODEL_LIST_FAILURE_TTL_MS)
     }
     if (!response.ok) {
-      return remember({ ids: [], rejected: false }, MODEL_LIST_CACHE_TTL_MS)
+      return remember({ ids: [], rejected: false }, MODEL_LIST_FAILURE_TTL_MS)
     }
 
     return remember(

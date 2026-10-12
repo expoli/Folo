@@ -178,9 +178,40 @@ describe("handleTranslationBatchRequest", () => {
       model: fake.model,
     })
 
-    // The first entry failed upstream, the second one still arrives.
+    // The first entry failed upstream, the second one still arrives, and the failure is reported in
+    // the reply itself: a batch that lost an entry must not read as a complete one.
+    const lines = (await response.text()).trim().split("\n").filter(Boolean)
+    expect(lines).toHaveLength(2)
+    expect(JSON.parse(lines[0]!)).toEqual({ id: "e2", data: { title: "Eins" } })
+
+    const { failures } = JSON.parse(lines[1]!) as { failures: { id: string; error: string }[] }
+    expect(failures).toHaveLength(1)
+    expect(failures[0]!.id).toBe("e1")
+    expect(failures[0]!.error).toContain("model call 0 failed")
+  })
+})
+
+describe("runTranslationBatch failure reporting", () => {
+  test("reports an entry the model produced no usable answer for", async () => {
+    // A chatty answer for a multi-field request cannot be read as JSON, so the entry would have been
+    // dropped without a word; the reply has to say that it failed.
+    const fake = createFakeModel(() => "not json at all")
+
+    const response = await handleTranslationBatchRequest({
+      body: {
+        entries: [{ id: "e1", title: "One", description: "Two" }],
+        fields: ["title", "description"],
+        language: "en",
+      },
+      model: fake.model,
+    })
+
     const lines = (await response.text()).trim().split("\n").filter(Boolean)
     expect(lines).toHaveLength(1)
-    expect(JSON.parse(lines[0]!)).toEqual({ id: "e2", data: { title: "Eins" } })
+
+    const { failures } = JSON.parse(lines[0]!) as { failures: { id: string; error: string }[] }
+    expect(failures).toHaveLength(1)
+    expect(failures[0]!.id).toBe("e1")
+    expect(failures[0]!.error).toContain("no usable translation")
   })
 })

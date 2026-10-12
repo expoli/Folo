@@ -2,7 +2,7 @@ import { createServer } from "node:http"
 import type { AddressInfo } from "node:net"
 
 import { LOCAL_AI_DIRECT_ORIGIN } from "@follow/shared/settings/local-ai"
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
+import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest"
 
 import { readNdjsonStream } from "../../lib/stream"
 import {
@@ -681,5 +681,38 @@ describe("direct mode transport", () => {
 
     expect(requests[0]).toMatchObject({ method: "POST", url: "/ai/summary" })
     expect(directCalls).toHaveLength(0)
+  })
+})
+
+describe("local AI runtime switching", () => {
+  test("cancels a request whose runtime was replaced while it was running", async () => {
+    configureLocalAI({ baseUrl: gatewayUrl, token: null, fingerprint: "gateway-a" })
+
+    // A gateway that never answers: the user gives up on it by switching the endpoint.
+    vi.stubGlobal(
+      "fetch",
+      (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("The operation was aborted.", "AbortError")),
+          )
+        }),
+    )
+
+    try {
+      const pending = requestLocalAISummary({
+        entryId: "entry-1",
+        language: "en",
+        target: "content",
+        content: "x",
+      })
+
+      // The answer of the old gateway must not be stored next to the new gateway's answers.
+      configureLocalAI({ baseUrl: gatewayUrl, token: null, fingerprint: "gateway-b" })
+
+      await expect(pending).rejects.toThrow(/configuration changed/)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

@@ -2,11 +2,12 @@ import { defaultAISettings } from "@follow/shared/settings/defaults"
 import type { LocalAIGatewaySettings } from "@follow/shared/settings/interface"
 import type { LocalAIDirectConfig } from "@follow/shared/settings/local-ai"
 
-import { normalizeLocalAIBaseUrl } from "../config"
+import type { LocalAIConfig } from "./config"
+import { normalizeLocalAIBaseUrl } from "./config"
 
 /**
- * Mapping of the `ai` settings onto the direct-mode runtime, shared by the desktop and mobile apps
- * so both read the same fields with the same fallbacks.
+ * Mapping of the `ai` settings onto the local AI runtime, shared by the desktop and mobile apps so
+ * both read the same fields with the same fallbacks.
  */
 
 /**
@@ -87,3 +88,22 @@ export const directConfigFingerprint = (config: LocalAIDirectConfig | null): str
         config.translationConcurrency ?? null,
       ])
     : null
+
+/**
+ * The fingerprint of whichever runtime is configured: the direct endpoint (model and tuning
+ * included) or the gateway the requests are sent to. `null` while local AI is off, so turning it off
+ * keeps the cached text a free account could not regenerate.
+ *
+ * The gateway token stays out on purpose: it decides who may answer, not what is written, and a
+ * fingerprint must not carry a secret.
+ */
+export const localAIRuntimeFingerprint = (
+  config: Partial<Pick<LocalAIConfig, "mode" | "baseUrl">> | null | undefined,
+  directConfig: LocalAIDirectConfig | null,
+): string | null => {
+  if (!config?.baseUrl) return null
+
+  return config.mode === "direct"
+    ? directConfigFingerprint(directConfig)
+    : JSON.stringify([config.mode, config.baseUrl])
+}

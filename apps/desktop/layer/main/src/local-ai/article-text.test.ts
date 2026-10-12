@@ -1,9 +1,11 @@
 import { describe, expect, test, vi } from "vitest"
 
+import type { PinnedRequest } from "./article-fetch"
 import type { ArticleFetchResult } from "./article-text"
 import {
   applyFetchedTexts,
   collectFetchTargets,
+  createArticleTextFetcher,
   fetchArticleTexts,
   htmlToText,
   looksLikeHtml,
@@ -92,7 +94,7 @@ describe("fetchArticleTexts", () => {
       [1, "Text of https://example.com/1"],
       [3, "Text of https://example.com/3"],
     ])
-    expect(result.failures).toEqual({ unreachable: 0, "too-short": 1, aborted: 0 })
+    expect(result.failures).toEqual({ unreachable: 0, blocked: 0, "too-short": 1, aborted: 0 })
     expect(progress[0]).toBe("0/3")
     expect(progress.at(-1)).toBe("3/3")
     expect(fetchText).toHaveBeenCalledTimes(3)
@@ -121,7 +123,7 @@ describe("fetchArticleTexts", () => {
     expect(await fetchArticleTexts({ targets: [], fetchText })).toEqual({
       texts: new Map(),
       attempted: 0,
-      failures: { unreachable: 0, "too-short": 0, aborted: 0 },
+      failures: { unreachable: 0, blocked: 0, "too-short": 0, aborted: 0 },
       skipped: 0,
     })
     expect(fetchText).not.toHaveBeenCalled()
@@ -207,5 +209,87 @@ describe("applyFetchedTexts", () => {
       }),
     ).toBe(0)
     expect(third[0]!.body).toBeUndefined()
+  })
+})
+
+describe("applyFetchedTexts budget", () => {
+  test("keeps the text the entry arrived with when the verbatim budget is spent", () => {
+    const entries: { title: string; content?: string }[] = [{ title: "One", content: "excerpt" }]
+
+    // A budget of zero is a budget, not "no limit": the prompt has no room left to spend.
+    expect(applyFetchedTexts(entries, new Map([[1, "y".repeat(5000)]]), { verbatimChars: 0 })).toBe(
+      0,
+    )
+    expect(entries[0]!.content).toBe("excerpt")
+  })
+
+  test("replaces the excerpt when no verbatim budget was announced", () => {
+    const entries: { title: string; content?: string }[] = [{ title: "One", content: "excerpt" }]
+
+    expect(applyFetchedTexts(entries, new Map([[1, "The whole article"]]))).toBe(1)
+    expect(entries[0]!.content).toBe("The whole article")
+  })
+})
+
+describe("createArticleTextFetcher", () => {
+  const articleHtml = `<!doctype html><html><head><title>Long read</title></head><body><article><h1>Long read</h1>${Array.from(
+    { length: 8 },
+    (_, index) => `<p>Paragraph ${index}: ${"sentence ".repeat(30)}</p>`,
+  ).join("")}</article></body></html>`
+
+  test("refuses a page on a private address without requesting it", async () => {
+    const request = vi.fn(
+      async (_request: PinnedRequest) => new Response(articleHtml, { status: 200 }),
+    )
+    const fetchText = createArticleTextFetcher({ request })
+
+    for (const url of [
+      "http://127.0.0.1:8080/article",
+      "http://192.168.1.20/article",
+      "http://169.254.169.254/latest/meta-data/",
+      "http://localhost:3000/article",
+    ]) {
+      await expect(fetchText(url, { timeoutMs: 1000 })).resolves.toEqual({
+        ok: false,
+        reason: "blocked",
+      })
+    }
+
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  test("refuses a name that resolves into the private network", async () => {
+    const request = vi.fn(
+      async (_request: PinnedRequest) => new Response(articleHtml, { status: 200 }),
+    )
+    const fetchText = createArticleTextFetcher({
+      request,
+      resolveHostname: async () => ["10.0.0.7"],
+    })
+
+    await expect(
+      fetchText("https://intranet.example.com/article", { timeoutMs: 1000 }),
+    ).resolves.toEqual({ ok: false, reason: "blocked" })
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  test("reads a public page through the address it validated", async () => {
+    const request = vi.fn(
+      async (_request: PinnedRequest) => new Response(articleHtml, { status: 200 }),
+    )
+    const fetchText = createArticleTextFetcher({
+      request,
+      resolveHostname: async () => ["93.184.216.34"],
+    })
+
+    const result = await fetchText("https://news.example.com/article", { timeoutMs: 1000 })
+
+    // What readability makes of the body depends on its own heuristics; what matters here is that a
+    // public page is read through the validated address and is not refused.
+    expect(request).toHaveBeenCalledTimes(1)
+    expect(request.mock.calls[0]![0]).toMatchObject({ address: "93.184.216.34", family: 4 })
+    expect(String(request.mock.calls[0]![0].url)).toBe("https://news.example.com/article")
+    expect(result).not.toMatchObject({ reason: "blocked" })
+    expect(result).not.toMatchObject({ reason: "unreachable" })
   })
 })

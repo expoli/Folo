@@ -1,8 +1,3 @@
-import {
-  DEFAULT_CHAT_SYSTEM_PROMPT,
-  languageName,
-  NO_CONTEXT_NOTE,
-} from "@follow/store/ai-local/direct/prompts"
 import { describe, expect, test } from "vitest"
 
 import {
@@ -14,6 +9,7 @@ import {
   pendingEntryTexts,
   toModelMessages,
 } from "./context"
+import { DEFAULT_CHAT_SYSTEM_PROMPT, languageName, NO_CONTEXT_NOTE } from "./prompts"
 
 describe("messageText", () => {
   test("joins text and rich-text data parts", () => {

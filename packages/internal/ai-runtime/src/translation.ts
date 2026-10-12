@@ -2,11 +2,12 @@ import type { LanguageModel } from "ai"
 import { generateText } from "ai"
 
 import { splitIntoChunks } from "./chunking"
+import { errorMessage } from "./errors"
 import { jsonResponse } from "./http"
+import { MAX_OUTPUT_TOKENS } from "./limits"
 import { parseJsonLoose } from "./loose-json"
 import { DEFAULT_TRANSLATION_SYSTEM_PROMPT, languageName } from "./prompts"
 import type { DirectCallOptions } from "./provider"
-import { MAX_OUTPUT_TOKENS } from "./provider"
 
 /** A field longer than this is translated chunk by chunk, like `AI_TRANSLATION_CHUNK_CHARS`. */
 export const TRANSLATION_CHUNK_CHARS = 8000
@@ -23,6 +24,7 @@ export const translateShortFields = async (
   fields: string[],
   language?: string | null,
   call?: DirectCallOptions,
+  systemPrompt?: string,
 ): Promise<TranslatedEntryData | null> => {
   const parts: string[] = []
   for (const field of fields) {
@@ -36,7 +38,7 @@ export const translateShortFields = async (
 
   const { text } = await generateText({
     model,
-    system: DEFAULT_TRANSLATION_SYSTEM_PROMPT,
+    system: systemPrompt ?? DEFAULT_TRANSLATION_SYSTEM_PROMPT,
     prompt: [
       `Translate each section below into ${languageName(language)}.`,
       `Reply with a JSON object using exactly these keys: ${fields.join(", ")}.`,
@@ -73,6 +75,7 @@ export const translateLongField = async (
   value: string,
   language?: string | null,
   call?: DirectCallOptions,
+  systemPrompt?: string,
 ): Promise<string | null> => {
   const chunks = splitIntoChunks(value, call?.translationChunkChars ?? TRANSLATION_CHUNK_CHARS)
   const translated: string[] = []
@@ -80,7 +83,7 @@ export const translateLongField = async (
   for (const [index, chunk] of chunks.entries()) {
     const { text } = await generateText({
       model,
-      system: DEFAULT_TRANSLATION_SYSTEM_PROMPT,
+      system: systemPrompt ?? DEFAULT_TRANSLATION_SYSTEM_PROMPT,
       prompt: [
         `Translate the text below into ${languageName(language)}.`,
         `It is part ${index + 1} of ${chunks.length} of the "${field}" field of one article.`,
@@ -110,6 +113,7 @@ export const translateEntry = async (
   fields: string[],
   language?: string | null,
   call?: DirectCallOptions,
+  systemPrompt?: string,
 ): Promise<TranslatedEntryData | null> => {
   const shortFields: string[] = []
   const longFields: string[] = []
@@ -130,7 +134,7 @@ export const translateEntry = async (
   if (shortFields.length > 0) {
     Object.assign(
       data,
-      (await translateShortFields(model, entry, shortFields, language, call)) ?? {},
+      (await translateShortFields(model, entry, shortFields, language, call, systemPrompt)) ?? {},
     )
   }
 
@@ -141,6 +145,7 @@ export const translateEntry = async (
       entry[field] as string,
       language,
       call,
+      systemPrompt,
     )
     if (translated) data[field] = translated
   }
@@ -148,18 +153,104 @@ export const translateEntry = async (
   return Object.keys(data).length > 0 ? data : null
 }
 
-const TRANSLATABLE_FIELDS = ["title", "description", "content", "readabilityContent"]
+/** One line of the NDJSON reply: a translated entry, or the entries that could not be translated. */
+export type TranslationBatchRow =
+  { id: string; data: TranslatedEntryData } | { failures: { id: string; error: string }[] }
+
+/** The model of one entry: a gateway lets each entry name a model, the direct mode uses one. */
+export type EntryModel = LanguageModel | ((entry: Record<string, unknown>) => LanguageModel)
+
+/**
+ * Runs a translation batch and reports every row through `onRow`, so the two transports of the
+ * contract (a complete `Response` body, a Node chunked response) share the pooling, the per-entry
+ * failures and the order-independent streaming.
+ *
+ * An entry whose translation failed is reported in a terminal `{ failures }` row instead of being
+ * dropped silently: the successful rows stay exactly as they were.
+ */
+export const runTranslationBatch = async (params: {
+  entries: Record<string, unknown>[]
+  fields: string[]
+  language?: string | null
+  model: EntryModel
+  call?: DirectCallOptions
+  systemPrompt?: string
+  /** Entries translated at the same time; defaults to the concurrency of the call options. */
+  concurrency?: number
+  onRow: (row: TranslationBatchRow) => void | Promise<void>
+  log?: (line: string) => void
+}): Promise<{ translated: number; failed: number }> => {
+  const { entries, fields, language, model, call, systemPrompt, onRow, log } = params
+  const modelFor = typeof model === "function" ? model : () => model
+  const concurrency = Math.max(
+    1,
+    Math.min(
+      params.concurrency ?? call?.translationConcurrency ?? TRANSLATION_CONCURRENCY,
+      Math.max(1, entries.length),
+    ),
+  )
+
+  const queue = [...entries]
+  const failures: { id: string; error: string }[] = []
+  let translated = 0
+
+  const worker = async () => {
+    for (;;) {
+      const entry = queue.shift()
+      if (!entry) return
+
+      const id = String(entry.id)
+      try {
+        const data = await translateEntry(
+          modelFor(entry),
+          entry,
+          fields,
+          language,
+          call,
+          systemPrompt,
+        )
+        if (data) {
+          translated += 1
+          await onRow({ id, data })
+          continue
+        }
+
+        // An answer without a single usable field is a failure of that entry, exactly like a
+        // rejected call: reporting it keeps the reply from reading as if the entry had none.
+        const message = "the model returned no usable translation"
+        failures.push({ id, error: message })
+        log?.(`translation failed for ${id}: ${message}`)
+      } catch (error) {
+        const message = errorMessage(error, "translation failed")
+        failures.push({ id, error: message })
+        log?.(`translation failed for ${id}: ${message}`)
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: concurrency }, () => worker()))
+
+  if (failures.length > 0) await onRow({ failures })
+
+  return { translated, failed: failures.length }
+}
+
+/** The entry fields a translation request may ask for. */
+export const TRANSLATABLE_FIELDS = ["title", "description", "content", "readabilityContent"]
 
 /**
  * Answers `POST /ai/translation/batch`. The reply is an NDJSON body of `{ id, data }` lines, the
- * same contract `readNdjsonStream` consumes from Folo's own API and from a self-hosted gateway.
+ * same contract `readNdjsonStream` consumes from Folo's own API and from a self-hosted gateway, and
+ * ends with a `{ failures }` line when some entries could not be translated.
  */
 export const handleTranslationBatchRequest = async (params: {
   body: Record<string, unknown>
   model: LanguageModel
   call?: DirectCallOptions
+  systemPrompt?: string
+  log?: (line: string) => void
 }): Promise<Response> => {
-  const { body, model, call } = params
+  const { body, model, call, systemPrompt, log } = params
   const entries = Array.isArray(body.entries)
     ? (body.entries as Record<string, unknown>[]).filter(
         (entry) => entry && typeof entry === "object",
@@ -175,34 +266,18 @@ export const handleTranslationBatchRequest = async (params: {
   }
 
   const lines: string[] = []
-  const queue = [...entries]
-  const worker = async () => {
-    for (;;) {
-      const entry = queue.shift()
-      if (!entry) return
-
-      try {
-        const data = await translateEntry(model, entry, fields, language, call)
-        if (data) {
-          lines.push(`${JSON.stringify({ id: String(entry.id), data })}\n`)
-        }
-      } catch (error) {
-        console.error(`[local-ai] translation failed for ${String(entry.id)}:`, error)
-      }
-    }
-  }
-
-  await Promise.all(
-    Array.from(
-      {
-        length: Math.max(
-          1,
-          Math.min(call?.translationConcurrency ?? TRANSLATION_CONCURRENCY, entries.length),
-        ),
-      },
-      () => worker(),
-    ),
-  )
+  await runTranslationBatch({
+    entries,
+    fields,
+    language,
+    model,
+    call,
+    systemPrompt,
+    log,
+    onRow: (row) => {
+      lines.push(`${JSON.stringify(row)}\n`)
+    },
+  })
 
   return new Response(lines.join(""), {
     status: 200,

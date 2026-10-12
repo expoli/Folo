@@ -8,10 +8,10 @@ import {
   resolveLocalAIConfig,
 } from "@follow/store/ai-local/config"
 import {
-  directConfigFingerprint,
   getDirectAIConfig as getSharedDirectAIConfig,
+  localAIRuntimeFingerprint,
   normalizeLocalGatewaySettings as normalizeSharedLocalGatewaySettings,
-} from "@follow/store/ai-local/direct/settings"
+} from "@follow/store/ai-local/settings"
 import { summaryActions } from "@follow/store/summary/store"
 import { translationActions } from "@follow/store/translation/store"
 import { EventBus } from "@follow/utils/event-bus"
@@ -50,8 +50,26 @@ export const useLocalAIConfig = () => useAtomValue(effectiveLocalAIConfigAtom, a
  */
 const desktopLocalGatewayDefaults = () => createDefaultSettings().localGateway
 
-/** The endpoint the cached summaries and translations were written with; see below. */
-let lastDirectFingerprint: string | null = null
+/** The runtime the cached summaries and translations were written with; see below. */
+let lastRuntimeFingerprint: string | null = null
+
+/**
+ * Resets start immediately — a caller that reads a cached answer right after the switch must not see
+ * the old one — and are chained afterwards, so a failing reset cannot become an unhandled rejection
+ * and a second switch still waits for the first one.
+ */
+let cachedTextReset: Promise<void> = Promise.resolve()
+const dropCachedAITexts = (): Promise<void> => {
+  const dropped = Promise.all([translationActions.reset(), summaryActions.reset()]).then(
+    () => undefined,
+    (error: unknown) => {
+      console.error("[local-ai] could not drop the cached AI text:", error)
+    },
+  )
+  cachedTextReset = Promise.all([cachedTextReset, dropped]).then(() => undefined)
+
+  return cachedTextReset
+}
 
 export const normalizeLocalGatewaySettings = (
   stored?: Partial<LocalAIGatewaySettings> | null,
@@ -163,20 +181,25 @@ export const applyLocalAIGatewaySettings = (): LocalAIConfig => {
   const settings = getLocalGatewaySettings()
   const resolved = resolveLocalAIConfig(settings)
 
-  const fingerprint = directConfigFingerprint(
+  // Both runtimes are fingerprinted: a changed gateway address makes the cached text just as stale
+  // as a changed model does.
+  const fingerprint = localAIRuntimeFingerprint(
+    resolved,
     resolved?.mode === "direct" ? getDirectAIConfig(settings) : null,
   )
   if (fingerprint !== null) {
-    if (lastDirectFingerprint !== null && fingerprint !== lastDirectFingerprint) {
-      void translationActions.reset()
-      void summaryActions.reset()
+    if (lastRuntimeFingerprint !== null && fingerprint !== lastRuntimeFingerprint) {
+      void dropCachedAITexts()
     }
 
-    lastDirectFingerprint = fingerprint
+    lastRuntimeFingerprint = fingerprint
   }
 
   const config = configureLocalAI({
     ...resolved,
+    // The fingerprint is what tells the store that the endpoint or model changed: `baseUrl` is the
+    // same internal origin in `direct` mode whatever the endpoint is.
+    fingerprint,
     fetch: resolved?.mode === "direct" ? directFetch : undefined,
   })
 

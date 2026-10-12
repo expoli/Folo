@@ -336,3 +336,53 @@ describe("stream channel", () => {
     expect(LOCAL_AI_CHAT_STREAM_CHANNEL).toBe("localAI.chatStream")
   })
 })
+
+describe("stream lifecycle", () => {
+  test("detaches its abort listener once the stream is over", async () => {
+    mocks.openChatStream.mockResolvedValue({
+      streamId: "stream-1",
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+      body: null,
+    })
+    const controller = new AbortController()
+    const removed = vi.spyOn(controller.signal, "removeEventListener")
+
+    const response = await directFetch()(`${LOCAL_AI_DIRECT_ORIGIN}/ai/chat`, {
+      method: "POST",
+      body: JSON.stringify({ messages: [] }),
+      signal: controller.signal,
+    })
+
+    const reader = response.body!.getReader()
+    pushStreamEvent({ streamId: "stream-1", chunk: "data: one\n\n" })
+    await reader.read()
+    pushStreamEvent({ streamId: "stream-1", done: true })
+    await expect(reader.read()).resolves.toMatchObject({ done: true })
+
+    // The signal outlives the request (each chat action passes its own), so its listener must not
+    // stay attached after the stream ended.
+    expect(removed).toHaveBeenCalledWith("abort", expect.any(Function))
+  })
+
+  test("detaches it when the chat is cancelled", async () => {
+    mocks.openChatStream.mockResolvedValue({
+      streamId: "stream-2",
+      status: 200,
+      headers: {},
+      body: null,
+    })
+    const controller = new AbortController()
+    const removed = vi.spyOn(controller.signal, "removeEventListener")
+
+    const response = await directFetch()(`${LOCAL_AI_DIRECT_ORIGIN}/ai/chat`, {
+      method: "POST",
+      signal: controller.signal,
+    })
+
+    await response.body!.cancel()
+
+    expect(removed).toHaveBeenCalledWith("abort", expect.any(Function))
+    expect(mocks.closeChatStream).toHaveBeenCalledWith({ streamId: "stream-2" })
+  })
+})

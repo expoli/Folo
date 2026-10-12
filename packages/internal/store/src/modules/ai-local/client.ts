@@ -6,6 +6,7 @@ import type { LocalAIContextBudget } from "./config"
 import {
   createLocalAIHeaders,
   getLocalAIConfig,
+  getLocalAIRequestSignal,
   localAIUrl,
   normalizeLocalAIBaseUrl,
   reportLocalAIError,
@@ -54,10 +55,22 @@ const statusHint = (status: number) => {
 
 const request = async (path: string, init: RequestInit) => {
   const url = localAIUrl(path)
+  // A runtime switch cancels the request it replaced, so an answer of the previous endpoint is
+  // never stored next to the answers of the new one.
+  const signal = getLocalAIRequestSignal()
 
   try {
-    return await localAIFetch()(url, init)
+    return await localAIFetch()(url, { ...init, signal })
   } catch (error) {
+    if (signal.aborted) {
+      throw new Error(
+        `The ${localAIPeer()} configuration changed while the request was running`.slice(
+          0,
+          MAX_ERROR_CHARS,
+        ),
+      )
+    }
+
     const reason = error instanceof Error ? error.message : String(error)
     const message = `${localAIPeer()} unreachable at ${gatewayBaseUrl()}: ${reason}`.slice(
       0,
