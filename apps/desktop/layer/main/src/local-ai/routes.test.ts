@@ -1,5 +1,5 @@
+import { DIRECT_CONTEXT_BUDGET } from "@follow/ai-runtime/provider"
 import type { LocalAIDirectConfig } from "@follow/shared/settings/local-ai"
-import { DIRECT_CONTEXT_BUDGET } from "@follow/store/ai-local/direct/provider"
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 
 import {

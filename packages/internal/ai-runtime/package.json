@@ -1,0 +1,32 @@
+{
+  "name": "@follow/ai-runtime",
+  "type": "module",
+  "private": true,
+  "author": "Folo Team",
+  "license": "AGPL-3.0-only",
+  "homepage": "https://github.com/RSSNext",
+  "repository": {
+    "url": "https://github.com/RSSNext/follow",
+    "type": "git"
+  },
+  "sideEffects": false,
+  "exports": {
+    "./*": {
+      "types": "./src/*.ts",
+      "require": "./src/*.ts",
+      "import": "./src/*.ts"
+    }
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ai-sdk/openai-compatible": "3.0.6",
+    "@follow/shared": "workspace:*",
+    "ai": "7.0.109"
+  },
+  "devDependencies": {
+    "@follow/configs": "workspace:*"
+  }
+}

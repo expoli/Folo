@@ -1,13 +1,13 @@
-import type { LocalAIDirectConfig } from "@follow/shared/settings/local-ai"
-import { LOCAL_AI_DIRECT_ORIGIN } from "@follow/shared/settings/local-ai"
 import {
   fetchUpstreamModelIds as fetchUpstreamModelIdsShared,
   handleConfig as handleConfigShared,
   handleHealth as handleHealthShared,
   parseModelIds,
   resetModelListCache,
-} from "@follow/store/ai-local/direct/config"
-import { routeLocalAIRequest as routeSharedLocalAIRequest } from "@follow/store/ai-local/direct/routes"
+} from "@follow/ai-runtime/config"
+import { routeLocalAIRequest as routeSharedLocalAIRequest } from "@follow/ai-runtime/router"
+import type { LocalAIDirectConfig } from "@follow/shared/settings/local-ai"
+import { LOCAL_AI_DIRECT_ORIGIN } from "@follow/shared/settings/local-ai"
 
 import { createChatStreamResponse, createStreamResumeResponse } from "./chat"
 import { jsonResponse, netFetch, parseJsonBody } from "./http"
@@ -55,7 +55,11 @@ export const routeLocalAIRequest = async (input: LocalAIRouteInput): Promise<Res
     })
   }
 
-  const handled = await routeSharedLocalAIRequest({ ...input, fetch: netFetch })
+  const handled = await routeSharedLocalAIRequest({
+    ...input,
+    fetch: netFetch,
+    log: (line) => console.log(`[local-ai] ${line}`),
+  })
   if (handled) return handled
 
   return jsonResponse(404, { error: `Unsupported endpoint: ${method} ${pathname}` })

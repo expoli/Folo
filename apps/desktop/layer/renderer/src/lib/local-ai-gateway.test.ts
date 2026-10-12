@@ -106,6 +106,7 @@ describe("local AI gateway wiring", () => {
 
   test("starts from the build-time address", () => {
     expect(applyLocalAIGatewaySettings()).toEqual({
+      fingerprint: expect.any(String),
       baseUrl: "http://env-gateway.test:8788",
       token: "env-token",
       mode: "gateway",
@@ -121,6 +122,7 @@ describe("local AI gateway wiring", () => {
     })
 
     expect(applyLocalAIGatewaySettings()).toEqual({
+      fingerprint: expect.any(String),
       baseUrl: "http://127.0.0.1:8788",
       token: "token-1",
       mode: "gateway",
@@ -168,6 +170,7 @@ describe("local AI gateway wiring", () => {
     jotaiStore.set(__aiSettingAtom, legacy as WebAISettings)
 
     expect(applyLocalAIGatewaySettings()).toEqual({
+      fingerprint: expect.any(String),
       baseUrl: "http://env-gateway.test:8788",
       token: "env-token",
       mode: "gateway",
@@ -205,6 +208,7 @@ describe("local AI gateway wiring", () => {
     })
 
     expect(getLocalAIConfig()).toEqual({
+      fingerprint: expect.any(String),
       baseUrl: "http://127.0.0.1:8788",
       token: "token-1",
       mode: "gateway",
@@ -362,6 +366,7 @@ describe("direct mode wiring", () => {
     })
 
     expect(applyLocalAIGatewaySettings()).toEqual({
+      fingerprint: expect.any(String),
       mode: "gateway",
       baseUrl: "http://127.0.0.1:8788",
       token: "token-1",

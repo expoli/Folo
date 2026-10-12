@@ -1,8 +1,8 @@
+import { fetchUpstreamModelIds } from "@follow/ai-runtime/config"
 import type { LocalAIGatewaySettings } from "@follow/shared/settings/interface"
 import type { LocalAIProbeResult, LocalAIReasoningEffort } from "@follow/shared/settings/local-ai"
 import { probeLocalAIGateway } from "@follow/store/ai-local/client"
-import { fetchUpstreamModelIds } from "@follow/store/ai-local/direct/config"
-import { normalizeLocalGatewaySettings } from "@follow/store/ai-local/direct/settings"
+import { normalizeLocalGatewaySettings } from "@follow/store/ai-local/settings"
 import { cn } from "@follow/utils"
 import { useCallback, useMemo, useState } from "react"
 import { useTranslation } from "react-i18next"
@@ -33,14 +33,16 @@ import {
   getDirectConfig,
   LOCAL_AI_DIRECT_ORIGIN,
   setDirectApiKey,
+  setLocalAIEnabled,
 } from "@/src/lib/local-ai"
 import type { NavigationControllerView } from "@/src/lib/navigation/types"
 
 const selectWrapperClassName = "w-auto min-w-[96px] max-w-[52vw] shrink-0"
 
-const toPositiveNumber = (value: string) => {
+/** Reads a field the user typed. `min` keeps temperature accepting its own `0`. */
+const toNumber = (value: string, min: number) => {
   const parsed = Number.parseFloat(value.trim())
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+  return Number.isFinite(parsed) && parsed >= min ? parsed : null
 }
 
 const asText = (value: number | null | undefined) => (value == null ? "" : String(value))
@@ -162,7 +164,7 @@ export const LocalAIScreen: NavigationControllerView = () => {
     label: string,
     value: number | null | undefined,
     commit: (value: number | null) => void,
-    options?: { description?: string },
+    options?: { description?: string; min?: number },
   ) => (
     <TextField
       key={label}
@@ -177,7 +179,7 @@ export const LocalAIScreen: NavigationControllerView = () => {
           return
         }
 
-        const parsed = toPositiveNumber(text)
+        const parsed = toNumber(text, options?.min ?? 1)
         if (parsed === null) {
           setNotice(t("settings.localGateway.direct.advanced.invalidNumber"))
           return
@@ -201,8 +203,9 @@ export const LocalAIScreen: NavigationControllerView = () => {
           <Switch
             value={settings.enabled}
             onValueChange={(enabled) => {
-              setLocalAIGatewaySetting({ enabled, mode: "direct" })
-              applyLocalAISettings()
+              // Only the switch is written: the mode the user configured (a gateway or a direct
+              // endpoint) has to survive turning local AI off and on again.
+              setLocalAIEnabled(enabled)
             }}
           />
         </GroupedInsetListCell>
@@ -241,8 +244,15 @@ export const LocalAIScreen: NavigationControllerView = () => {
                   <Action
                     label={t("settings.localGateway.direct.apiKey.save")}
                     onPress={() => {
-                      setDirectApiKey(apiKeyDraft)
-                      setHasApiKey(Boolean(apiKeyDraft.trim()))
+                      const result = setDirectApiKey(apiKeyDraft)
+                      if (!result.ok) {
+                        // Storing a key unencrypted is never an option; say why instead.
+                        setHasApiKey(Boolean(getDirectApiKey()))
+                        setNotice(result.message)
+                        return
+                      }
+
+                      setHasApiKey(result.hasApiKey)
                       setApiKeyDraft("")
                       setNotice(t("settings.localGateway.direct.apiKey.saved"))
                     }}
@@ -367,6 +377,8 @@ export const LocalAIScreen: NavigationControllerView = () => {
               t("settings.localGateway.direct.advanced.temperature.label"),
               options.temperature,
               (value) => patchOptions({ temperature: value }),
+              // 0 is a meaningful temperature (as deterministic as the endpoint gets).
+              { min: 0 },
             )}
             {numberField(
               t("settings.localGateway.direct.advanced.summaryChunkChars.label"),

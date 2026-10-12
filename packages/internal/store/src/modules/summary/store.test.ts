@@ -1,3 +1,4 @@
+import { summaryService } from "@follow/database/services/summary"
 import { FollowAPIError } from "@follow-app/client-sdk"
 import { beforeEach, describe, expect, test, vi } from "vitest"
 
@@ -6,7 +7,7 @@ import type { FollowAPI } from "../../types"
 import { useEntryStore } from "../entry/store"
 import type { EntryModel } from "../entry/types"
 import { SummaryGeneratingStatus } from "./enum"
-import { summarySyncService, useSummaryStore } from "./store"
+import { summaryActions, summarySyncService, useSummaryStore } from "./store"
 import { getGenerateSummaryStatusId } from "./utils"
 
 const { insertSummaryMock } = vi.hoisted(() => ({
@@ -95,5 +96,56 @@ describe("summarySyncService", () => {
         getGenerateSummaryStatusId(entryId, actionLanguage, target)
       ],
     ).toBe(SummaryGeneratingStatus.Error)
+  })
+})
+
+describe("cached summaries", () => {
+  const summary = (entryId: string) => ({
+    entryId,
+    language: "en" as const,
+    summary: `Summary of ${entryId}`,
+    readabilitySummary: null,
+  })
+
+  beforeEach(() => {
+    useSummaryStore.setState({ data: {}, generatingStatus: {} })
+  })
+
+  test("drops the least recently used entries, which are entries and not languages", () => {
+    vi.useFakeTimers({ toFake: ["Date"] })
+
+    try {
+      vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"))
+      summaryActions.upsertManyInSession(
+        Array.from({ length: 10 }, (_, index) => summary(`entry-${index}`)),
+      )
+
+      // Reading the oldest entry again makes it the most recently used one.
+      vi.setSystemTime(new Date("2026-01-01T00:01:00.000Z"))
+      expect(summaryActions.getSummary("entry-0", "en")).toBeDefined()
+
+      vi.setSystemTime(new Date("2026-01-01T00:02:00.000Z"))
+      summaryActions.upsertManyInSession([summary("entry-new")])
+
+      const { data } = useSummaryStore.getState()
+      expect(Object.keys(data)).toHaveLength(10)
+      expect(data["entry-0"]).toBeDefined()
+      expect(data["entry-1"]).toBeUndefined()
+      expect(data["entry-new"]).toBeDefined()
+      // The pruning used to delete `data[language]`, which is never an entry id: a long session
+      // kept every summary it had ever generated, and the language keys were the only thing it
+      // could have hit.
+      expect(data["en"]).toBeUndefined()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  test("reports a failing persistence instead of dropping it", async () => {
+    // The persist callback used to drop its promise, so this rejection never reached the caller: it
+    // surfaced as an unhandled rejection while the reset looked like it had succeeded.
+    vi.mocked(summaryService.reset).mockRejectedValueOnce(new Error("no database"))
+
+    await expect(summaryActions.reset()).rejects.toThrow("no database")
   })
 })

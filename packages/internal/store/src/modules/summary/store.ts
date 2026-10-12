@@ -102,22 +102,31 @@ class SummaryActions implements Resetable, Hydratable {
 
   private batchClean() {
     const state = get()
-    const entries = Object.entries(state.data)
-      .map(([, data]) => data)
-      .flatMap((data) => Object.entries(data))
+    // One item per entry *and* language. Flattening without keeping the entry id made the pruning
+    // below delete `state.data[language]` — a language key that is never a stored entry — so nothing
+    // was ever dropped and the map grew without a limit.
+    const entries = Object.entries(state.data).flatMap(([entryId, byLanguage]) =>
+      Object.entries(byLanguage).map(([language, data]) => ({
+        entryId,
+        language,
+        lastAccessed: data?.lastAccessed || 0,
+      })),
+    )
 
     if (entries.length <= 10) return
 
-    const sortedEntries = entries.sort(
-      ([, a], [, b]) => (a?.lastAccessed || 0) - (b?.lastAccessed || 0),
-    )
-
-    const entriesToRemove = sortedEntries.slice(0, entries.length - 10)
+    const entriesToRemove = entries
+      .sort((a, b) => a.lastAccessed - b.lastAccessed)
+      .slice(0, entries.length - 10)
 
     immerSet((state) => {
-      entriesToRemove.forEach(([entryId]) => {
-        delete state.data[entryId]
-      })
+      for (const { entryId, language } of entriesToRemove) {
+        const byLanguage = state.data[entryId]
+        if (!byLanguage) continue
+
+        delete byLanguage[language as keyof typeof byLanguage]
+        if (Object.keys(byLanguage).length === 0) delete state.data[entryId]
+      }
     })
   }
 
@@ -129,8 +138,10 @@ class SummaryActions implements Resetable, Hydratable {
         generatingStatus: {},
       })
     })
-    tx.persist(() => {
-      summaryService.reset()
+    tx.persist(async () => {
+      // Returned (awaited) on purpose: a rejected promise here used to escape the transaction as an
+      // unhandled rejection instead of reaching the caller that reports it.
+      await summaryService.reset()
     })
 
     await tx.run()

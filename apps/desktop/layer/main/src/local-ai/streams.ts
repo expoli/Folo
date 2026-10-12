@@ -45,6 +45,11 @@ export const openChatStream = (params: OpenChatStreamParams): string | null => {
         if (chunk) send({ streamId, chunk })
       }
 
+      // A multi-byte character split across the last network chunks is still held by the decoder;
+      // dropping it would cut the last character of the answer.
+      const tail = decoder.decode()
+      if (tail) send({ streamId, chunk: tail })
+
       send({ streamId, done: true })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)

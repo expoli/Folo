@@ -6,6 +6,8 @@ import {
   DEFAULT_LOCAL_AI_CONTEXT_BUDGET,
   getLocalAIConfig,
   getLocalAIContextBudget,
+  getLocalAIGeneration,
+  getLocalAIRequestSignal,
   isLocalAIEnabled,
   localAIUrl,
   resetLocalAI,
@@ -172,5 +174,58 @@ describe("resolveLocalAIConfig", () => {
       expect(getLocalAIConfig().fetch).toBe(directFetch)
       expect(getLocalAIConfig().mode).toBe("direct")
     })
+  })
+})
+
+describe("runtime generation", () => {
+  beforeEach(() => {
+    resetLocalAI()
+  })
+
+  test("leaves the requests of the current runtime alone while nothing changed", () => {
+    const applied = configureLocalAI({
+      mode: "direct",
+      baseUrl: LOCAL_AI_DIRECT_ORIGIN,
+      fingerprint: "endpoint-a",
+    })
+    const signal = getLocalAIRequestSignal()
+    const generation = getLocalAIGeneration()
+
+    configureLocalAI({ ...applied, fetch: undefined })
+
+    expect(signal.aborted).toBe(false)
+    expect(getLocalAIGeneration()).toBe(generation)
+  })
+
+  test("cancels the previous requests when the endpoint or model changes", () => {
+    configureLocalAI({
+      mode: "direct",
+      baseUrl: LOCAL_AI_DIRECT_ORIGIN,
+      fingerprint: "endpoint-a",
+    })
+    const signal = getLocalAIRequestSignal()
+    const generation = getLocalAIGeneration()
+
+    // `direct` mode sends every request to the same internal origin, so only the fingerprint can
+    // tell the two endpoints apart.
+    configureLocalAI({
+      mode: "direct",
+      baseUrl: LOCAL_AI_DIRECT_ORIGIN,
+      fingerprint: "endpoint-b",
+    })
+
+    expect(signal.aborted).toBe(true)
+    expect(getLocalAIGeneration()).toBe(generation + 1)
+    expect(getLocalAIRequestSignal().aborted).toBe(false)
+  })
+
+  test("cancels them too when local AI is switched off", () => {
+    configureLocalAI({ mode: "gateway", baseUrl: "http://127.0.0.1:8788", fingerprint: "gateway" })
+    const signal = getLocalAIRequestSignal()
+
+    resetLocalAI()
+
+    expect(signal.aborted).toBe(true)
+    expect(isLocalAIEnabled()).toBe(false)
   })
 })

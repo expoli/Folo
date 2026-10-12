@@ -118,17 +118,20 @@ export const createSettingAtom = <T extends object>(
   ) => {
     const updated = Date.now()
 
-    EventBus.dispatch("SETTING_CHANGE_EVENT", {
-      key: settingKey as "general" | "ui" | "spotlight",
-      payload: {
-        [key]: value,
-      },
-    })
+    // The state is written first: a subscriber of `SETTING_CHANGE_EVENT` rereads the settings to
+    // act on the change, and dispatching before the write would hand it the previous value.
     setSettings({
       ...getSettings(),
       [key]: value,
 
       updated,
+    })
+
+    EventBus.dispatch("SETTING_CHANGE_EVENT", {
+      key: settingKey as "general" | "ui" | "spotlight",
+      payload: {
+        [key]: value,
+      },
     })
   }
 

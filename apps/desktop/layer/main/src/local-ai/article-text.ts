@@ -3,8 +3,8 @@
  *
  * A timeline summary is only as good as what it reads: an entry that was never opened carries the
  * excerpt its feed published, which is often a single sentence. Before the reduce pre-pass runs,
- * the pages of those entries are fetched and parsed here (through Chromium's network stack, so the
- * app's proxy settings apply) and the result replaces the excerpt as the text to summarize.
+ * the pages of those entries are fetched through a pinned Node connection and parsed here. The
+ * transport preserves Host/TLS identity and prevents DNS rebinding, but does not use the app proxy.
  *
  * This is best effort by design: the machine may not reach every host, so each fetch has its own
  * timeout, the whole pass has a budget, failures keep the text the entry already had, and the
@@ -12,7 +12,10 @@
  */
 import { readability } from "@follow-app/readability"
 
-import { netFetch } from "./http"
+import type { PageTransport, PinnedRequestFn } from "./article-fetch"
+import { createGuardedArticleFetch } from "./article-fetch"
+import type { HostResolver } from "./network-guard"
+import { BlockedDestinationError } from "./network-guard"
 
 /** Text shorter than this is likely the feed's excerpt rather than the article. */
 export const FETCH_MIN_CHARS = 1200
@@ -36,10 +39,11 @@ export interface FetchTarget {
 }
 
 /**
- * Why a page did not yield an article: the host could not be read, the page parsed to less than an
- * excerpt (paywall, cookie wall, a listing), or the request was stopped.
+ * Why a page did not yield an article: the host could not be read, the destination is not a public
+ * one, the page parsed to less than an excerpt (paywall, cookie wall, a listing), or the request was
+ * stopped.
  */
-export type FetchFailure = "unreachable" | "too-short" | "aborted"
+export type FetchFailure = "unreachable" | "blocked" | "too-short" | "aborted"
 
 export type ArticleFetchResult = { ok: true; text: string } | { ok: false; reason: FetchFailure }
 
@@ -88,32 +92,66 @@ export const htmlToText = (text: string) =>
 export const promptText = (text: string) => (looksLikeHtml(text) ? htmlToText(text) : text)
 
 /** Fetches and parses one article, saying why a page did not become one. */
-export const fetchArticleText: ArticleFetcher = async (url, { signal, timeoutMs }) => {
-  const controller = new AbortController()
-  const abort = () => controller.abort()
-  signal?.addEventListener("abort", abort, { once: true })
-  const timeout = setTimeout(abort, timeoutMs)
-  timeout.unref?.()
+export const createArticleTextFetcher =
+  (
+    options: {
+      /** Whole-hop transport; the default resolves and pins each destination. */
+      transport?: PageTransport
+      /** Request primitive of the default transport; injected by the tests. */
+      request?: PinnedRequestFn
+      /** How hostnames are resolved before a page is requested; injected by the tests. */
+      resolveHostname?: HostResolver
+      /** How many redirect hops are followed. */
+      maxRedirects?: number
+      log?: (line: string) => void
+    } = {},
+  ): ArticleFetcher =>
+  async (url, { signal, timeoutMs }) => {
+    const controller = new AbortController()
+    const abort = () => controller.abort()
+    signal?.addEventListener("abort", abort, { once: true })
+    const timeout = setTimeout(abort, timeoutMs)
+    timeout.unref?.()
 
-  try {
-    const result = await readability(url, {
-      fetch: (input, init) => netFetch(input, { ...init, signal: controller.signal }),
+    // Only public destinations are read, and every hop is pinned to a validated address before it
+    // is requested.
+    const fetchPage = createGuardedArticleFetch({
+      transport: options.transport,
+      request: options.request,
+      resolveHostname: options.resolveHostname,
+      maxRedirects: options.maxRedirects,
+      log: options.log,
     })
 
-    const text = typeof result?.textContent === "string" ? result.textContent.trim() : ""
-    if (signal?.aborted) return { ok: false, reason: "aborted" }
+    try {
+      const result = await readability(url, {
+        fetch: (input, init) => fetchPage(input, { ...init, signal: controller.signal }),
+      })
 
-    // The pass exists because a short excerpt was too little: something that parses shorter than
-    // one is usually a paywall, a cookie wall or a stub, and the excerpt reads better.
-    return text.length >= FETCH_MIN_CHARS ? { ok: true, text } : { ok: false, reason: "too-short" }
-  } catch {
-    // Unreachable, blocked, not a page, timed out: the entry keeps the text it arrived with.
-    return { ok: false, reason: signal?.aborted ? "aborted" : "unreachable" }
-  } finally {
-    clearTimeout(timeout)
-    signal?.removeEventListener("abort", abort)
+      const text = typeof result?.textContent === "string" ? result.textContent.trim() : ""
+      if (signal?.aborted) return { ok: false, reason: "aborted" }
+
+      // The pass exists because a short excerpt was too little: something that parses shorter than
+      // one is usually a paywall, a cookie wall or a stub, and the excerpt reads better.
+      return text.length >= FETCH_MIN_CHARS
+        ? { ok: true, text }
+        : { ok: false, reason: "too-short" }
+    } catch (error) {
+      if (signal?.aborted) return { ok: false, reason: "aborted" }
+      if (error instanceof BlockedDestinationError) {
+        options.log?.(`fetch: refused ${url} — ${error.message}`)
+        return { ok: false, reason: "blocked" }
+      }
+
+      // Unreachable, not a page, timed out: the entry keeps the text it arrived with.
+      return { ok: false, reason: "unreachable" }
+    } finally {
+      clearTimeout(timeout)
+      signal?.removeEventListener("abort", abort)
+    }
   }
-}
+
+export const fetchArticleText: ArticleFetcher = createArticleTextFetcher()
 
 /** The entries worth fetching: those whose text is a short one and which point somewhere. */
 export const collectFetchTargets = (
@@ -173,7 +211,12 @@ export const fetchArticleTexts = async (params: {
   } = params
   const texts = new Map<number, string>()
   const startedAt = Date.now()
-  const failures: Record<FetchFailure, number> = { unreachable: 0, "too-short": 0, aborted: 0 }
+  const failures: Record<FetchFailure, number> = {
+    unreachable: 0,
+    blocked: 0,
+    "too-short": 0,
+    aborted: 0,
+  }
   let cursor = 0
   let done = 0
   let skipped = 0
@@ -207,6 +250,7 @@ export const fetchArticleTexts = async (params: {
 
   const reasons = [
     failures.unreachable > 0 ? `${failures.unreachable} unreachable` : "",
+    failures.blocked > 0 ? `${failures.blocked} not a public destination` : "",
     failures["too-short"] > 0 ? `${failures["too-short"]} too short to be an article` : "",
     failures.aborted > 0 ? `${failures.aborted} stopped` : "",
     skipped > 0 ? `${skipped} skipped after ${budgetMs}ms` : "",
@@ -228,10 +272,18 @@ export const fetchArticleTexts = async (params: {
 export const applyFetchedTexts = <T extends { content?: unknown; body?: unknown }>(
   entries: T[],
   texts: Map<number, string>,
-  options: { verbatimChars?: number; bodyChars?: number; totalBodyChars?: number } = {},
+  options: {
+    /**
+     * Text share of a verbatim entry. `undefined` keeps the fetched text as it is; `0` means the
+     * budget is spent, so the entry keeps the text it arrived with.
+     */
+    verbatimChars?: number
+    bodyChars?: number
+    totalBodyChars?: number
+  } = {},
 ): number => {
   let applied = 0
-  const verbatimChars = options.verbatimChars ?? 0
+  const verbatimChars = options.verbatimChars
   // A fetched text is a body for the reduce pre-pass, and the client caps those for the same
   // reason: one long page must not become a batch of its own (or a doomed provider call).
   const bodyChars = options.bodyChars ?? FETCH_BODY_CHARS
@@ -247,8 +299,12 @@ export const applyFetchedTexts = <T extends { content?: unknown; body?: unknown 
     if (existing && existing.length >= text.length) continue
 
     if (typeof entry.content === "string" && entry.content) {
-      // The prompt shows this entry in full: keep it there, within its share of the budget.
-      const limit = verbatimChars > 0 ? verbatimChars : text.length
+      // The prompt shows this entry in full: keep it there, within its share of the budget. No
+      // `verbatimChars` at all means "no share to respect"; a budget of 0 means there is nothing
+      // left to spend and the entry keeps the text it arrived with.
+      if (verbatimChars !== undefined && verbatimChars <= 0) continue
+
+      const limit = verbatimChars ?? text.length
       entry.content = text.length <= limit ? text : text.slice(0, limit)
     } else {
       const limit = Math.min(bodyChars, remainingBody)

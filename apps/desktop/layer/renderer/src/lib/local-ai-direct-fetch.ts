@@ -51,6 +51,8 @@ const openDirectChatStream = async (input: LocalAIRequestInput, signal?: AbortSi
   let streamId: string | null = null
   let deliver: ((event: LocalAIChatStreamEvent) => void) | null = null
   let finished = false
+  /** Detaches the abort listener of this stream; see `finish`. */
+  let detachAbort: (() => void) | null = null
 
   // Subscribe before opening the stream: the main process starts pushing as soon as it answers,
   // and `ipcRenderer.on` does not buffer, so subscribing afterwards could drop the first chunk.
@@ -74,6 +76,10 @@ const openDirectChatStream = async (input: LocalAIRequestInput, signal?: AbortSi
     if (finished) return false
 
     finished = true
+    // The signal outlives this stream (one chat request per signal), so its listener is removed
+    // instead of staying attached for the next request of the same chat.
+    detachAbort?.()
+    detachAbort = null
     unsubscribe?.()
     deliver = null
     if (abortUpstream && streamId) void services.localAI.closeChatStream({ streamId })
@@ -105,6 +111,8 @@ const openDirectChatStream = async (input: LocalAIRequestInput, signal?: AbortSi
           controller.error(new DOMException("The chat request was aborted", "AbortError"))
         }
       }
+
+      detachAbort = () => signal?.removeEventListener("abort", abort)
 
       if (signal?.aborted) {
         abort()

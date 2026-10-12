@@ -6,6 +6,7 @@ packages:
   - apps/mobile/web-app
   - apps/mobile/web-app/html-renderer
   - store-assets
+  - tools/ai-gateway
   - "!**/example"
   - "!**/example/**"
 

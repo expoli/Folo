@@ -7,6 +7,6 @@ import { net } from "electron"
 export const netFetch = ((input: RequestInfo | URL, init?: RequestInit) =>
   net.fetch(input instanceof Request ? input : input.toString(), init)) as typeof globalThis.fetch
 
-// The request/response helpers are platform neutral, so they live with the direct-mode core that
-// every app shares.
-export { jsonResponse, parseJsonBody } from "@follow/store/ai-local/direct/http"
+// The request/response helpers are platform neutral, so they live with the runtime every app
+// shares.
+export { jsonResponse, parseJsonBody } from "@follow/ai-runtime/http"

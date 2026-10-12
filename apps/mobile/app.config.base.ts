@@ -66,12 +66,12 @@ export default ({ config }: ConfigContext): ExpoConfig => {
 
     extra: {
       eas: {
-        projectId: "a6335b14-fb84-45aa-ba80-6f6ab8926920",
+        projectId: "f170ba09-0af5-4a68-8c51-ec780f051042",
       },
       e2eEnvProfile: process.env.EXPO_PUBLIC_E2E_ENV_PROFILE ?? null,
       e2eLanguage: process.env.EXPO_PUBLIC_E2E_LANGUAGE ?? null,
     },
-    owner: "follow",
+    owner: "tangcuyuha",
     updates: {
       url: "https://ota.folo.is/manifest",
       requestHeaders: {
@@ -87,7 +87,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     runtimeVersion,
 
     name: "Folo",
-    slug: "follow",
+    slug: "folo-rss-local-ai",
     version: PKG.version,
     orientation: "portrait" as const,
     icon: iconPath,

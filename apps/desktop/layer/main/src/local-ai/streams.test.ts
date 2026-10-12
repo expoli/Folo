@@ -181,3 +181,23 @@ describe("openChatStream onFinish", () => {
     expect(onFinish).toHaveBeenCalledTimes(1)
   })
 })
+
+describe("stream decoder", () => {
+  test("flushes the last bytes when the stream ends inside a character", async () => {
+    const { events, send } = collect()
+    const bytes = encoder.encode("ok 摘")
+    const streamId = openChatStream({
+      // The stream is cut inside the last (three byte) character: without the final flush those
+      // bytes would be dropped without a trace.
+      response: chunkedResponse([bytes.slice(0, bytes.length - 1)]),
+      abortController: new AbortController(),
+      send,
+    })!
+
+    await settled()
+
+    const text = events.flatMap((event) => ("chunk" in event ? [event.chunk] : [])).join("")
+    expect(text).toBe("ok \uFFFD")
+    expect(events.at(-1)).toEqual({ streamId, done: true })
+  })
+})

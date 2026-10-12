@@ -3,14 +3,30 @@ import type { LocalAIDirectConfig } from "@follow/shared/settings/local-ai"
 import { LOCAL_AI_DIRECT_ORIGIN } from "@follow/shared/settings/local-ai"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-const mocks = vi.hoisted(() => ({
-  settings: null as LocalAIGatewaySettings | null,
-  apiKey: null as string | null,
-  defaults: null as LocalAIGatewaySettings | null,
-  toasts: [] as string[],
-  resetTranslations: vi.fn(),
-  resetSummaries: vi.fn(),
-}))
+const mocks = vi.hoisted(() => {
+  class SecureStorageUnavailableError extends Error {
+    constructor() {
+      super("The OS keychain is not available, and storing the value unencrypted was refused")
+      this.name = "SecureStorageUnavailableError"
+    }
+  }
+
+  return {
+    settings: null as LocalAIGatewaySettings | null,
+    apiKey: null as string | null,
+    /** Whether the OS keychain works; when it does not, only the strict caller sees nothing. */
+    keychain: true,
+    defaults: null as LocalAIGatewaySettings | null,
+    toasts: [] as string[],
+    resetTranslations: vi.fn(),
+    resetSummaries: vi.fn(),
+    setGatewaySetting: vi.fn(),
+    readCalls: [] as { key: string; strict: boolean }[],
+    writeCalls: [] as { key: string; value: string; strict: boolean }[],
+    setError: null as Error | null,
+    SecureStorageUnavailableError,
+  }
+})
 
 // The real stores reach the SQLite service, and through it the build-time globals the app defines;
 // this module only needs to know that they are asked to drop their cached text.
@@ -33,9 +49,20 @@ vi.mock("@/src/lib/toast", () => ({
 }))
 
 vi.mock("@/src/lib/secure-store", () => ({
+  SecureStorageUnavailableError: mocks.SecureStorageUnavailableError,
   safeSecureStore: {
-    getItem: (key: string) => (key === "follow_local_ai_direct_api_key" ? mocks.apiKey : null),
-    setItem: vi.fn(),
+    getItem: (key: string, options?: { allowInsecureFallback?: boolean }) => {
+      const strict = options?.allowInsecureFallback === false
+      mocks.readCalls.push({ key, strict })
+      // A caller that refuses the fallback only ever sees what the keychain holds.
+      if (strict && !mocks.keychain) return null
+
+      return key === "follow_local_ai_direct_api_key" ? mocks.apiKey : null
+    },
+    setItem: (key: string, value: string, options?: { allowInsecureFallback?: boolean }) => {
+      mocks.writeCalls.push({ key, value, strict: options?.allowInsecureFallback === false })
+      if (mocks.setError) throw mocks.setError
+    },
     removeItem: vi.fn(),
   },
 }))
@@ -43,6 +70,7 @@ vi.mock("@/src/lib/secure-store", () => ({
 vi.mock("@/src/atoms/settings/ai", () => ({
   createDefaultAISettings: () => ({ localGateway: mocks.defaults }),
   getAISettings: () => ({ localGateway: mocks.settings }),
+  setLocalAIGatewaySetting: mocks.setGatewaySetting,
   setSetting: vi.fn(),
 }))
 
@@ -104,6 +132,11 @@ describe("mobile local AI", () => {
     mocks.settings = defaultGatewaySettings()
     mocks.defaults = defaultGatewaySettings()
     mocks.apiKey = null
+    mocks.keychain = true
+    mocks.readCalls.length = 0
+    mocks.writeCalls.length = 0
+    mocks.setError = null
+    mocks.setGatewaySetting.mockReset()
   })
 
   afterEach(() => {
@@ -187,8 +220,7 @@ describe("mobile local AI", () => {
       async () => replies.shift() ?? new Response("{}", { status: 200 }),
     ) as unknown as typeof globalThis.fetch
 
-    const { fetchUpstreamModelIds, resetModelListCache } =
-      await import("@follow/store/ai-local/direct/config")
+    const { fetchUpstreamModelIds, resetModelListCache } = await import("@follow/ai-runtime/config")
     const { setDirectApiKey } = await loadModule()
     resetModelListCache()
 
@@ -317,5 +349,103 @@ describe("mobile local AI", () => {
       token: "seed-token",
       fetch: undefined,
     })
+  })
+})
+
+describe("mobile Local AI storage and switching", () => {
+  beforeEach(() => {
+    mocks.settings = defaultGatewaySettings()
+    mocks.defaults = defaultGatewaySettings()
+    mocks.apiKey = null
+    mocks.keychain = true
+    mocks.readCalls.length = 0
+    mocks.writeCalls.length = 0
+    mocks.setError = null
+    mocks.setGatewaySetting.mockReset()
+  })
+
+  it("reads the API key from the keychain only", async () => {
+    mocks.apiKey = "sk-real"
+    const { getDirectApiKey } = await loadModule()
+
+    expect(getDirectApiKey()).toBe("sk-real")
+    expect(mocks.readCalls).toEqual([{ key: "follow_local_ai_direct_api_key", strict: true }])
+  })
+
+  it("never reads a plaintext copy of the key", async () => {
+    // An earlier build stored the key unencrypted because the keychain was missing.
+    mocks.apiKey = "sk-plaintext"
+    mocks.keychain = false
+    const { getDirectApiKey } = await loadModule()
+
+    expect(getDirectApiKey()).toBeNull()
+    expect(mocks.readCalls.every((call) => call.strict)).toBe(true)
+  })
+
+  it("reports that it will not store the key unencrypted", async () => {
+    mocks.setError = new mocks.SecureStorageUnavailableError()
+    const { setDirectApiKey } = await loadModule()
+
+    expect(setDirectApiKey("sk-secret")).toMatchObject({
+      ok: false,
+      reason: "encryption-unavailable",
+    })
+    // It asked for the strict write, which is what refused to keep the secret.
+    expect(mocks.writeCalls).toEqual([
+      { key: "follow_local_ai_direct_api_key", value: "sk-secret", strict: true },
+    ])
+  })
+
+  it("saves the key when the keychain works, and clears it when the field is emptied", async () => {
+    const { setDirectApiKey } = await loadModule()
+
+    expect(setDirectApiKey(" sk-secret ")).toEqual({ ok: true, hasApiKey: true })
+    expect(mocks.writeCalls[0]).toMatchObject({ value: "sk-secret", strict: true })
+
+    expect(setDirectApiKey("")).toEqual({ ok: true, hasApiKey: false })
+  })
+
+  it("keeps the configured gateway mode when local AI is switched off and on", async () => {
+    mocks.settings = {
+      ...defaultGatewaySettings(),
+      enabled: true,
+      mode: "gateway",
+      baseUrl: "http://192.168.1.20:8788",
+      token: "seed-token",
+    }
+
+    const { applyLocalAISettings, setLocalAIEnabled } = await loadModule()
+
+    setLocalAIEnabled(false)
+    setLocalAIEnabled(true)
+
+    // The switch writes `enabled` and nothing else: rewriting `mode` here is what used to turn a
+    // configured gateway into a direct endpoint.
+    expect(mocks.setGatewaySetting.mock.calls).toEqual([[{ enabled: false }], [{ enabled: true }]])
+    expect(applyLocalAISettings()).toMatchObject({
+      mode: "gateway",
+      baseUrl: "http://192.168.1.20:8788",
+      token: "seed-token",
+    })
+  })
+
+  it("cancels the requests of the previous endpoint when the model changes", async () => {
+    mocks.settings = {
+      ...defaultGatewaySettings(),
+      enabled: true,
+      directBaseUrl: "https://api.example.com/v1",
+      directModel: "model-a",
+    }
+    const { applyLocalAISettings } = await loadModule()
+    const { getLocalAIRequestSignal } = await import("@follow/store/ai-local/config")
+
+    applyLocalAISettings()
+    const signal = getLocalAIRequestSignal()
+
+    mocks.settings = { ...mocks.settings, directModel: "model-b" }
+    applyLocalAISettings()
+
+    expect(signal.aborted).toBe(true)
+    expect(getLocalAIRequestSignal().aborted).toBe(false)
   })
 })

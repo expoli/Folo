@@ -9,13 +9,18 @@
     "node": ">=22"
   },
   "scripts": {
-    "start": "node server.mjs",
+    "build": "node scripts/build.mjs",
+    "start": "pnpm run build && node dist/server.mjs",
     "mock-upstream": "node test/mock-openai.mjs",
     "check": "node test/check.mjs"
   },
   "dependencies": {
     "@ai-sdk/openai": "4.0.9",
+    "@follow/ai-runtime": "workspace:*",
     "ai": "7.0.109",
-    "zod": "4.6.5"
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.1"
   }
 }
