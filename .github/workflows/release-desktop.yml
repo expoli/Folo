@@ -123,15 +123,22 @@ jobs:
       - name: Stage the release assets
         shell: bash
         run: |
-          shopt -s globstar nullglob
           mkdir -p release-assets
-          cp apps/desktop/out/make/**/Folo-*.dmg \
-            apps/desktop/out/make/**/Folo-*.zip \
-            apps/desktop/out/make/**/Folo-*.exe \
-            apps/desktop/out/make/**/Folo-*.AppImage \
-            apps/desktop/out/make/**/Folo-*.deb \
-            apps/desktop/out/make/**/latest*.yml \
-            release-assets/
+          find apps/desktop/out/make -type f \
+            \( -name 'Folo-*.dmg' \
+              -o -name 'Folo-*.zip' \
+              -o -name 'Folo-*.exe' \
+              -o -name 'Folo-*.AppImage' \
+              -o -name 'Folo-*.deb' \
+              -o -name 'latest*.yml' \) \
+            -exec cp {} release-assets/ \;
+
+          asset_count="$(find release-assets -type f | wc -l | tr -d ' ')"
+          if [ "$asset_count" -eq 0 ]; then
+            echo "::error::No desktop release assets were produced"
+            exit 1
+          fi
+
           ls -l release-assets
 
       - name: Upload the release assets
@@ -189,3 +196,33 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release edit "v${{ needs.version.outputs.value }}" --draft=false
+
+      # Keep manual Windows and Linux downloads together with the rolling Android APK. The rolling
+      # prerelease remains outside the desktop updater feed; latest*.yml belongs to the stable release.
+      - name: Update the rolling latest-builds release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          shopt -s nullglob
+          assets=(
+            release-assets/Folo-*.exe
+            release-assets/Folo-*.AppImage
+            release-assets/Folo-*.deb
+          )
+
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "::error::No Windows or Linux assets were downloaded"
+            exit 1
+          fi
+
+          if gh release view android/latest >/dev/null 2>&1; then
+            gh release edit android/latest --title "Latest builds" --prerelease
+          else
+            gh release create android/latest \
+              --title "Latest builds" \
+              --notes "Rolling prerelease downloads built from this fork." \
+              --prerelease
+          fi
+
+          gh release upload android/latest "${assets[@]}" --clobber
