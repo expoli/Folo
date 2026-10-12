@@ -64,3 +64,26 @@ export const getDirectAIConfig = (
     translationConcurrency: options.translationConcurrency,
   }
 }
+
+/**
+ * Everything about the endpoint that changes the words a cached answer contains.
+ *
+ * Summaries and translations are kept for a week, so switching the model (or its tuning) would
+ * otherwise leave the app answering with the previous model's text. The fingerprint covers the
+ * fields that shape an answer, not the ones that only affect how it is fetched (the model list, the
+ * token).
+ */
+export const directConfigFingerprint = (config: LocalAIDirectConfig | null): string | null =>
+  config
+    ? JSON.stringify([
+        config.baseUrl,
+        config.model,
+        config.maxOutputTokens ?? null,
+        config.temperature ?? null,
+        config.reasoningEffort ?? null,
+        config.extraRequestBody ?? null,
+        config.summaryChunkChars ?? null,
+        config.translationChunkChars ?? null,
+        config.translationConcurrency ?? null,
+      ])
+    : null

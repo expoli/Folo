@@ -8,9 +8,12 @@ import {
   resolveLocalAIConfig,
 } from "@follow/store/ai-local/config"
 import {
+  directConfigFingerprint,
   getDirectAIConfig as getSharedDirectAIConfig,
   normalizeLocalGatewaySettings as normalizeSharedLocalGatewaySettings,
 } from "@follow/store/ai-local/direct/settings"
+import { summaryActions } from "@follow/store/summary/store"
+import { translationActions } from "@follow/store/translation/store"
 import { EventBus } from "@follow/utils/event-bus"
 import { jotaiStore } from "@follow/utils/jotai"
 import { isEqual } from "es-toolkit"
@@ -46,6 +49,9 @@ export const useLocalAIConfig = () => useAtomValue(effectiveLocalAIConfigAtom, a
  * a fresh object on every render would make their draft-sync effect revert the user's typing.
  */
 const desktopLocalGatewayDefaults = () => createDefaultSettings().localGateway
+
+/** The endpoint the cached summaries and translations were written with; see below. */
+let lastDirectFingerprint: string | null = null
 
 export const normalizeLocalGatewaySettings = (
   stored?: Partial<LocalAIGatewaySettings> | null,
@@ -149,10 +155,26 @@ export const importLocalAIConfigFromByok = async (): Promise<LocalAIImportFromBy
 /**
  * Pushes the saved settings into the shared store, so summary / translation / chat pick the new
  * runtime up on their next request. Called at bootstrap and whenever the settings change.
+ *
+ * Cached summaries and translations carry the words of the model that wrote them, so a changed
+ * endpoint or model drops them; turning local AI off keeps them.
  */
 export const applyLocalAIGatewaySettings = (): LocalAIConfig => {
   const settings = getLocalGatewaySettings()
   const resolved = resolveLocalAIConfig(settings)
+
+  const fingerprint = directConfigFingerprint(
+    resolved?.mode === "direct" ? getDirectAIConfig(settings) : null,
+  )
+  if (fingerprint !== null) {
+    if (lastDirectFingerprint !== null && fingerprint !== lastDirectFingerprint) {
+      void translationActions.reset()
+      void summaryActions.reset()
+    }
+
+    lastDirectFingerprint = fingerprint
+  }
+
   const config = configureLocalAI({
     ...resolved,
     fetch: resolved?.mode === "direct" ? directFetch : undefined,

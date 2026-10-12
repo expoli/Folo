@@ -87,6 +87,15 @@ class TranslationActions implements Hydratable, Resetable {
   getTranslation(entryId: string, language: SupportedActionLanguage) {
     return get().data[entryId]?.[language]
   }
+
+  /** Drops one entry's translations, so the next request translates it again. */
+  async removeTranslation(entryId: string) {
+    immerSet((state) => {
+      delete state.data[entryId]
+    })
+
+    await TranslationService.deleteTranslation(entryId)
+  }
 }
 
 export const translationActions = new TranslationActions()

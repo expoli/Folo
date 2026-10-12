@@ -13,6 +13,7 @@
   "entry_content.header.play_tts": "TTS を再生",
   "entry_content.header.play_tts_description": "設定でTTS音声を選択し、TTSを開始して音声コンテンツに変換します",
   "entry_content.header.reading_settings": "読書設定",
+  "entry_content.header.retranslate": "再翻訳",
   "entry_content.header.show_readability": "リーダーモード",
   "entry_content.header.show_translation": "翻訳を表示",
   "entry_content.no_content": "コンテンツがありません",

@@ -5,7 +5,7 @@ import { useAtomValue, useSetAtom } from "jotai"
 import { use } from "react"
 import { View } from "react-native"
 
-import { useActionLanguage, useGeneralSettingKey } from "@/src/atoms/settings/general"
+import { useActionLanguage } from "@/src/atoms/settings/general"
 import { UserAvatar } from "@/src/components/ui/avatar/UserAvatar"
 import { FeedIcon } from "@/src/components/ui/icon/feed-icon"
 import { Text } from "@/src/components/ui/typography/Text"
@@ -16,8 +16,9 @@ import { EntryTranslation } from "../entry-list/templates/EntryTranslation"
 
 export const EntryTitle = ({ title, entryId }: { title: string; entryId: string }) => {
   const { showAITranslationAtom } = useEntryContentContext()
-  const showTranslationOnce = useAtomValue(showAITranslationAtom)
-  const enableTranslation = useGeneralSettingKey("translation") || showTranslationOnce
+  // The entry context carries the display state: the automatic setting decides its first value and
+  // the per-article action can turn the translation off again.
+  const enableTranslation = useAtomValue(showAITranslationAtom)
   const actionLanguage = useActionLanguage()
   const translation = useEntryTranslation({
     entryId,

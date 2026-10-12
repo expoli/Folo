@@ -6,9 +6,12 @@ import { configureLocalAI, resolveLocalAIConfig } from "@follow/store/ai-local/c
 import { resetModelListCache } from "@follow/store/ai-local/direct/config"
 import { routeLocalAIRequest } from "@follow/store/ai-local/direct/routes"
 import {
+  directConfigFingerprint,
   getDirectAIConfig,
   normalizeLocalGatewaySettings,
 } from "@follow/store/ai-local/direct/settings"
+import { summaryActions } from "@follow/store/summary/store"
+import { translationActions } from "@follow/store/translation/store"
 import { EventBus } from "@follow/utils/event-bus"
 
 import { createDefaultAISettings, getAISettings } from "@/src/atoms/settings/ai"
@@ -132,6 +135,18 @@ export const createLocalAIDirectFetch = (
 const directFetch = createLocalAIDirectFetch(() => getDirectConfig())
 
 /**
+ * Cached summaries and translations carry the words of the model that wrote them, and they stay for
+ * a week. A changed endpoint or model therefore drops them; turning local AI off keeps them, so a
+ * free account does not lose text it could no longer regenerate.
+ */
+let lastDirectFingerprint: string | null = null
+
+const dropCachedAITexts = () => {
+  void translationActions.reset()
+  void summaryActions.reset()
+}
+
+/**
  * Pushes the saved settings into the shared store, so summary and translation pick the new runtime
  * up on their next request. Called at bootstrap and whenever the settings change.
  *
@@ -139,7 +154,19 @@ const directFetch = createLocalAIDirectFetch(() => getDirectConfig())
  * first run (`createDefaultAISettings`), so turning local AI off in the app turns it off.
  */
 export const applyLocalAISettings = (): LocalAIConfig => {
-  const resolved = resolveLocalAIConfig(getLocalGatewaySettings())
+  const settings = getLocalGatewaySettings()
+  const resolved = resolveLocalAIConfig(settings)
+
+  const fingerprint = directConfigFingerprint(
+    resolved?.mode === "direct" ? getDirectConfig(settings) : null,
+  )
+  if (fingerprint !== null) {
+    if (lastDirectFingerprint !== null && fingerprint !== lastDirectFingerprint) {
+      dropCachedAITexts()
+    }
+
+    lastDirectFingerprint = fingerprint
+  }
 
   // A gateway is called with the runtime's own fetch; only the direct mode installs a transport.
   return configureLocalAI({

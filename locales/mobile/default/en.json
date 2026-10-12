@@ -13,6 +13,7 @@
   "entry_content.header.play_tts": "Play TTS",
   "entry_content.header.play_tts_description": "Select a TTS voice in settings and start TTS to convert to audio content",
   "entry_content.header.reading_settings": "Reading Settings",
+  "entry_content.header.retranslate": "Re-translate",
   "entry_content.header.show_readability": "Show Readability",
   "entry_content.header.show_translation": "Show Translation",
   "entry_content.no_content": "No media available",

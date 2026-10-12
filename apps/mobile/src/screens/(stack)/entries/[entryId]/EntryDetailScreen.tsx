@@ -1,4 +1,5 @@
 import { FeedViewType, UserRole } from "@follow/constants"
+import { isLocalAIEnabled } from "@follow/store/ai-local/config"
 import { useEntry, useEntryReadHistory, usePrefetchEntryDetail } from "@follow/store/entry/hooks"
 import { entrySyncServices } from "@follow/store/entry/store"
 import { useFeedById } from "@follow/store/feed/hooks"
@@ -56,15 +57,24 @@ export const EntryDetailScreen: NavigationControllerView<{
   useAutoMarkAsRead(entryId, !!entry && isLoggedIn)
   const insets = useSafeAreaInsets()
   const floatingPlayerBarInset = useFloatingPlayerBarInset()
+  const translationSetting = useGeneralSettingKey("translation")
   const ctxValue = useMemo(
     () => ({
       showAISummaryAtom: atom(entry?.summary || false),
-      showAITranslationAtom: atom(!!entry?.translation || false),
+      // The automatic setting decides the first state, and the per-article action can turn the
+      // translation off again -- an `||` on every reader would make that impossible.
+      showAITranslationAtom: atom(translationSetting || !!entry?.translation || false),
       showReadabilityAtom: atom(entry?.readability || false),
       showSourceContentAtom: atom(entry?.sourceContent || false),
       titleHeightAtom: atom(0),
     }),
-    [entry?.readability, entry?.sourceContent, entry?.summary, entry?.translation],
+    [
+      entry?.readability,
+      entry?.sourceContent,
+      entry?.summary,
+      entry?.translation,
+      translationSetting,
+    ],
   )
   const navigation = useNavigation()
   const nextEntryId = useMemo(() => {
@@ -148,15 +158,17 @@ const EntryContentWebViewWithContext = ({ entryId }: { entryId: string }) => {
   const { showReadabilityAtom, showAITranslationAtom, showSourceContentAtom } =
     useEntryContentContext()
   const showReadabilityOnce = useAtomValue(showReadabilityAtom)
-  const translationSetting = useGeneralSettingKey("translation")
   const translationMode = useGeneralSettingKey("translationMode")
   const showTranslationOnce = useAtomValue(showAITranslationAtom)
   const actionLanguage = useActionLanguage()
   const userRole = useUserRole()
-  const showTranslation = translationSetting || showTranslationOnce
+  const showTranslation = showTranslationOnce
+  // A local endpoint unlocks the translation for a free account, like the desktop app.
   const translationPrefetchEnabled =
     showTranslation &&
-    (userRole == null || (userRole !== UserRole.Free && userRole !== UserRole.Trial))
+    (isLocalAIEnabled() ||
+      userRole == null ||
+      (userRole !== UserRole.Free && userRole !== UserRole.Trial))
   const entry = useEntry(entryId, (state) => ({
     content: state.content,
     readabilityContent: state.readabilityContent,

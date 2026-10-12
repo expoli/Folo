@@ -8,6 +8,19 @@ const mocks = vi.hoisted(() => ({
   apiKey: null as string | null,
   defaults: null as LocalAIGatewaySettings | null,
   toasts: [] as string[],
+  resetTranslations: vi.fn(),
+  resetSummaries: vi.fn(),
+}))
+
+// The real stores reach the SQLite service, and through it the build-time globals the app defines;
+// this module only needs to know that they are asked to drop their cached text.
+vi.mock("@follow/store/translation/store", () => ({
+  translationActions: { reset: mocks.resetTranslations, removeTranslation: vi.fn() },
+  translationSyncService: { generateTranslation: vi.fn() },
+}))
+
+vi.mock("@follow/store/summary/store", () => ({
+  summaryActions: { reset: mocks.resetSummaries },
 }))
 
 vi.mock("@/src/lib/toast", () => ({
@@ -226,6 +239,34 @@ describe("mobile local AI", () => {
     expect(mocks.toasts[0]).toContain("https://api.example.com/v1")
     expect(mocks.toasts[0]).toContain("failed")
     expect(error.message).toContain("failed")
+  })
+
+  it("drops cached AI text when the model changes, and keeps it when local AI is switched off", async () => {
+    mocks.settings = {
+      ...defaultGatewaySettings(),
+      enabled: true,
+      directBaseUrl: "https://api.example.com/v1",
+      directModel: "model-a",
+    }
+
+    const { applyLocalAISettings } = await loadModule()
+
+    // Align the module with this endpoint first, then watch the next calls.
+    applyLocalAISettings()
+    vi.clearAllMocks()
+
+    applyLocalAISettings()
+    expect(mocks.resetTranslations).not.toHaveBeenCalled()
+
+    mocks.settings = { ...mocks.settings, directModel: "model-b" }
+    applyLocalAISettings()
+    expect(mocks.resetTranslations).toHaveBeenCalledTimes(1)
+    expect(mocks.resetSummaries).toHaveBeenCalledTimes(1)
+
+    // A free account could not regenerate what it loses, so turning local AI off keeps the text.
+    mocks.settings = { ...mocks.settings, enabled: false }
+    applyLocalAISettings()
+    expect(mocks.resetTranslations).toHaveBeenCalledTimes(1)
   })
 
   it("points the shared store at the configured endpoint once the settings are enabled", async () => {

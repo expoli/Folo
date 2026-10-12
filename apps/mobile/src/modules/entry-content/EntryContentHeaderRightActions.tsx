@@ -4,7 +4,7 @@ import { useEntry } from "@follow/store/entry/hooks"
 import { entrySyncServices } from "@follow/store/entry/store"
 import { useFeedById } from "@follow/store/feed/hooks"
 import { useSubscriptionById } from "@follow/store/subscription/hooks"
-import { translationSyncService } from "@follow/store/translation/store"
+import { translationActions, translationSyncService } from "@follow/store/translation/store"
 import { useIsLoggedIn } from "@follow/store/user/hooks"
 import { setStringAsync } from "expo-clipboard"
 import { useAtom } from "jotai"
@@ -22,6 +22,7 @@ import { DropdownMenu } from "@/src/components/ui/context-menu"
 import { AiCuteReIcon } from "@/src/icons/ai_cute_re"
 import { DocmentCuteReIcon } from "@/src/icons/docment_cute_re"
 import { More1CuteReIcon } from "@/src/icons/more_1_cute_re"
+import { Refresh2CuteReIcon } from "@/src/icons/refresh_2_cute_re"
 import { ShareForwardCuteReIcon } from "@/src/icons/share_forward_cute_re"
 import { StarCuteFiIcon } from "@/src/icons/star_cute_fi"
 import { StarCuteReIcon } from "@/src/icons/star_cute_re"
@@ -121,6 +122,19 @@ const HeaderRightActionsImpl = ({
     setShowTranslation((prev) => !prev)
   }
 
+  /** Throws the cached translation away, so the model writes it again. */
+  const retranslate = async () => {
+    setShowTranslation(true)
+    await translationActions.removeTranslation(entryId)
+    await translationSyncService.generateTranslation({
+      entryId,
+      language: getActionLanguage(),
+      withContent: true,
+      target: showReadability ? "readabilityContent" : "content",
+      mode: translationMode,
+    })
+  }
+
   const toggleReadability = useCallback(() => {
     entrySyncServices.fetchEntryReadabilityContent(entryId)
     setShowReadability((prev) => !prev)
@@ -187,6 +201,17 @@ const HeaderRightActionsImpl = ({
       active: showTranslation,
       isCheckbox: true,
     },
+    // Only meaningful while a translation is on screen: it replaces the cached text with a fresh
+    // answer from the configured model.
+    isLoggedIn &&
+      showTranslation && {
+        key: "Retranslate",
+        title: t("entry_content.header.retranslate"),
+        icon: <Refresh2CuteReIcon />,
+        iconIOS: { name: "arrow.triangle.2.circlepath" },
+        onPress: retranslate,
+        inMenu: true,
+      },
     {
       key: "PlayTts",
       title: t("entry_content.header.play_tts"),
