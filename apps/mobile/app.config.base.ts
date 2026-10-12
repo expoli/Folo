@@ -71,7 +71,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       e2eEnvProfile: process.env.EXPO_PUBLIC_E2E_ENV_PROFILE ?? null,
       e2eLanguage: process.env.EXPO_PUBLIC_E2E_LANGUAGE ?? null,
     },
-    owner: "expoli",
+    owner: "tangcuyuha",
     updates: {
       url: "https://ota.folo.is/manifest",
       requestHeaders: {
