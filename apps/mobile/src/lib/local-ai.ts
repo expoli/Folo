@@ -13,6 +13,7 @@ import { EventBus } from "@follow/utils/event-bus"
 
 import { createDefaultAISettings, getAISettings } from "@/src/atoms/settings/ai"
 import { safeSecureStore } from "@/src/lib/secure-store"
+import { toast } from "@/src/lib/toast"
 
 /**
  * Local AI on mobile.
@@ -45,6 +46,34 @@ export const setDirectApiKey = (apiKey: string) => {
 }
 
 const defaultLocalGatewaySettings = () => createDefaultAISettings().localGateway
+
+/**
+ * A failed local AI request is invisible otherwise: the store reports it and the app says it out
+ * loud. Repeats of the same failure are swallowed for a moment, because one broken request can
+ * trigger several (a summary, a title, a batch of translations).
+ */
+const ERROR_TOAST_THROTTLE_MS = 8000
+let lastReportedError = { message: "", at: 0 }
+
+const reportLocalAIError = (message: string) => {
+  // In direct mode the store talks to an internal origin, because the real endpoint lives in this
+  // app's transport. Say the address the user typed instead.
+  const displayed = message.replaceAll(
+    LOCAL_AI_DIRECT_ORIGIN,
+    getDirectConfig()?.baseUrl ?? LOCAL_AI_DIRECT_ORIGIN,
+  )
+
+  const now = Date.now()
+  if (
+    lastReportedError.message === displayed &&
+    now - lastReportedError.at < ERROR_TOAST_THROTTLE_MS
+  ) {
+    return
+  }
+
+  lastReportedError = { message: displayed, at: now }
+  toast.error(displayed, { duration: 6000 })
+}
 
 /** Saved settings with every field defined, so a stored object from an older build still resolves. */
 export const getLocalGatewaySettings = (): LocalAIGatewaySettings =>
@@ -116,6 +145,7 @@ export const applyLocalAISettings = (): LocalAIConfig => {
   return configureLocalAI({
     ...resolved,
     fetch: resolved?.mode === "direct" ? directFetch : undefined,
+    onError: reportLocalAIError,
   })
 }
 

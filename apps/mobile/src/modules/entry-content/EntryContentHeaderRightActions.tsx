@@ -19,6 +19,7 @@ import type { MenuItemIconProps } from "zeego/lib/typescript/menu"
 import { getActionLanguage, useGeneralSettingKey } from "@/src/atoms/settings/general"
 import { ActionBarItem } from "@/src/components/ui/action-bar/ActionBarItem"
 import { DropdownMenu } from "@/src/components/ui/context-menu"
+import { AiCuteReIcon } from "@/src/icons/ai_cute_re"
 import { DocmentCuteReIcon } from "@/src/icons/docment_cute_re"
 import { More1CuteReIcon } from "@/src/icons/more_1_cute_re"
 import { ShareForwardCuteReIcon } from "@/src/icons/share_forward_cute_re"
@@ -80,11 +81,11 @@ const HeaderRightActionsImpl = ({
       },
   )
 
-  const { showReadabilityAtom, showAITranslationAtom } = useEntryContentContext()
+  const { showReadabilityAtom, showAITranslationAtom, showAISummaryAtom } = useEntryContentContext()
   const [showTranslation, setShowTranslation] = useAtom(showAITranslationAtom)
   const [showReadability, setShowReadability] = useAtom(showReadabilityAtom)
-  const showAITranslationSetting =
-    useGeneralSettingKey("translation") || !!entry?.settings?.translation
+  const [showSummary, setShowSummary] = useAtom(showAISummaryAtom)
+  const showAISummarySetting = useGeneralSettingKey("summary")
   const translationMode = useGeneralSettingKey("translationMode")
   const showReadabilitySetting = !!entry?.settings?.readability
 
@@ -165,17 +166,27 @@ const HeaderRightActionsImpl = ({
       isCheckbox: true,
       // inMenu: true,
     },
-    isLoggedIn &&
-      !showAITranslationSetting && {
-        key: "ShowTranslation",
-        title: t("entry_content.header.show_translation"),
-        icon: <Translate2CuteReIcon />,
-        iconIOS: { name: "globe" },
-        onPress: toggleAITranslation,
-        active: showTranslation,
-        isCheckbox: true,
-        inMenu: true,
-      },
+    // Offered while the automatic summary is off: this is the per-article way to ask for one.
+    !showAISummarySetting && {
+      key: "ShowAISummary",
+      title: t("entry_content.ai_summary"),
+      icon: <AiCuteReIcon />,
+      iconIOS: { name: "sparkles" },
+      onPress: () => setShowSummary((prev) => !prev),
+      active: showSummary,
+      isCheckbox: true,
+    },
+    // Always offered, also while translations are generated automatically: the automatic path
+    // translates the title only, so this is the way to translate the article itself.
+    isLoggedIn && {
+      key: "ShowTranslation",
+      title: t("entry_content.header.show_translation"),
+      icon: <Translate2CuteReIcon />,
+      iconIOS: { name: "globe" },
+      onPress: toggleAITranslation,
+      active: showTranslation,
+      isCheckbox: true,
+    },
     {
       key: "PlayTts",
       title: t("entry_content.header.play_tts"),

@@ -363,6 +363,63 @@ describe("local AI gateway client", () => {
     expect(message).toContain("http://127.0.0.1:9")
     expect(message.length).toBeLessThanOrEqual(300)
   })
+
+  test("hands a failure to the app reporter instead of only logging it", async () => {
+    const reported: string[] = []
+    configureLocalAI({
+      baseUrl: "http://127.0.0.1:9",
+      onError: (message) => reported.push(message),
+    })
+
+    const error = (await requestLocalAISummary({
+      entryId: "e",
+      language: "en",
+      target: "content",
+      content: "x",
+    }).catch((reason: Error) => reason)) as Error
+
+    expect(reported).toEqual([error.message])
+  })
+
+  test("reports a rejected request as well", async () => {
+    const reported: string[] = []
+    configureLocalAI({
+      baseUrl: gatewayUrl,
+      token: "bad-token",
+      onError: (message) => reported.push(message),
+    })
+
+    await requestLocalAISummary({
+      entryId: "e",
+      language: "en",
+      target: "content",
+      content: "x",
+    }).catch(() => undefined)
+
+    expect(reported).toHaveLength(1)
+    expect(reported[0]).toContain("failed")
+  })
+
+  test("keeps the reporter when the endpoint is configured again", async () => {
+    const reported: string[] = []
+    configureLocalAI({
+      baseUrl: "http://127.0.0.1:9",
+      onError: (message) => reported.push(message),
+    })
+
+    // The apps configure the runtime again whenever the settings change; the reporter belongs to
+    // the app rather than to one endpoint.
+    configureLocalAI({ baseUrl: "http://127.0.0.1:9" })
+
+    await requestLocalAISummary({
+      entryId: "e",
+      language: "en",
+      target: "content",
+      content: "x",
+    }).catch(() => undefined)
+
+    expect(reported).toHaveLength(1)
+  })
 })
 
 describe("probeLocalAIGateway", () => {

@@ -8,6 +8,7 @@ import {
   getLocalAIConfig,
   localAIUrl,
   normalizeLocalAIBaseUrl,
+  reportLocalAIError,
   setLocalAIContextBudget,
 } from "./config"
 
@@ -58,9 +59,13 @@ const request = async (path: string, init: RequestInit) => {
     return await localAIFetch()(url, init)
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
-    throw new Error(
-      `${localAIPeer()} unreachable at ${gatewayBaseUrl()}: ${reason}`.slice(0, MAX_ERROR_CHARS),
+    const message = `${localAIPeer()} unreachable at ${gatewayBaseUrl()}: ${reason}`.slice(
+      0,
+      MAX_ERROR_CHARS,
     )
+    reportLocalAIError(message)
+
+    throw new Error(message)
   }
 }
 
@@ -69,8 +74,10 @@ const assertOk = async (response: Response, action: string) => {
 
   const detail = await readErrorText(response)
   const message = `${localAIPeer()} ${action} failed at ${gatewayBaseUrl()} (${response.status} ${statusHint(response.status)})`
+  const fullMessage = (detail ? `${message}: ${detail}` : message).slice(0, MAX_ERROR_CHARS)
+  reportLocalAIError(fullMessage)
 
-  throw new Error((detail ? `${message}: ${detail}` : message).slice(0, MAX_ERROR_CHARS))
+  throw new Error(fullMessage)
 }
 
 /**

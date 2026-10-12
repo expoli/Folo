@@ -24,6 +24,11 @@ export interface LocalAIConfig {
    * process over IPC. Gateways keep using the global fetch.
    */
   fetch?: typeof globalThis.fetch
+  /**
+   * Called when a request fails, so the app can tell the user instead of leaving the reason in the
+   * console. A broken reporter never breaks a request; the error is still thrown to the caller.
+   */
+  onError?: (message: string) => void
 }
 
 /**
@@ -61,9 +66,20 @@ export const configureLocalAI = (next?: Partial<LocalAIConfig> | null): LocalAIC
     token: next?.token?.trim() || null,
     mode: next?.mode ?? "gateway",
     fetch: next?.fetch,
+    // An app registers the reporter once, so re-configuring the endpoint keeps it.
+    onError: next?.onError ?? config.onError,
   }
 
   return config
+}
+
+/** Tells the app-owned reporter about a failed request; never throws. */
+export const reportLocalAIError = (message: string) => {
+  try {
+    config.onError?.(message)
+  } catch (error) {
+    console.warn("[local-ai] the error reporter threw", error)
+  }
 }
 
 /**

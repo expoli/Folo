@@ -7,6 +7,16 @@ const mocks = vi.hoisted(() => ({
   settings: null as LocalAIGatewaySettings | null,
   apiKey: null as string | null,
   defaults: null as LocalAIGatewaySettings | null,
+  toasts: [] as string[],
+}))
+
+vi.mock("@/src/lib/toast", () => ({
+  toast: {
+    error: (message: string) => mocks.toasts.push(message),
+    success: vi.fn(),
+    info: vi.fn(),
+    show: vi.fn(),
+  },
 }))
 
 vi.mock("@/src/lib/secure-store", () => ({
@@ -186,6 +196,38 @@ describe("mobile local AI", () => {
     ).resolves.toMatchObject({ rejected: false, ids: ["model-a", "model-b"] })
   })
 
+  it("tells the user when the endpoint cannot be reached", async () => {
+    mocks.settings = {
+      ...defaultGatewaySettings(),
+      enabled: true,
+      directBaseUrl: "https://api.example.com/v1",
+      directModel: "model-a",
+    }
+    mocks.toasts.length = 0
+    globalThis.fetch = vi.fn(async () => {
+      throw new Error("Network request failed for the toast test")
+    }) as unknown as typeof globalThis.fetch
+
+    const { applyLocalAISettings } = await loadModule()
+    applyLocalAISettings()
+
+    // What the entry screens do when they need a summary; the failure has to become visible
+    // instead of staying in the console.
+    const { requestLocalAISummary } = await import("@follow/store/ai-local/client")
+    const error = (await requestLocalAISummary({
+      entryId: "entry-1",
+      language: "en",
+      target: "content",
+      content: "x",
+    }).catch((reason: Error) => reason)) as Error
+
+    expect(mocks.toasts).toHaveLength(1)
+    // The message names the endpoint the user configured, not the internal origin the store uses.
+    expect(mocks.toasts[0]).toContain("https://api.example.com/v1")
+    expect(mocks.toasts[0]).toContain("failed")
+    expect(error.message).toContain("failed")
+  })
+
   it("points the shared store at the configured endpoint once the settings are enabled", async () => {
     mocks.settings = {
       ...defaultGatewaySettings(),
@@ -201,6 +243,8 @@ describe("mobile local AI", () => {
       mode: "direct",
       baseUrl: LOCAL_AI_DIRECT_ORIGIN,
     })
+    // The runtime keeps a reporter, so a broken endpoint is not silent.
+    expect(applyLocalAISettings().onError).toBeTypeOf("function")
   })
 
   it("leaves local AI off once the user turns it off", async () => {
