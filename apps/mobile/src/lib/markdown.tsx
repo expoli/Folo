@@ -74,6 +74,24 @@ const renderTextChildren = (children: any): any => {
   }
   return String(children || "")
 }
+const ListItemContext = React.createContext(false)
+
+const MarkdownParagraph = ({ children }: { children?: React.ReactNode }) => {
+  const inListItem = React.useContext(ListItemContext)
+  if (inListItem) {
+    return (
+      <Text className="mb-4 text-base text-label" selectable>
+        {renderTextChildren(children)}
+      </Text>
+    )
+  }
+  return (
+    <TextInput className="mb-4 text-base text-label" multiline readOnly>
+      {renderTextChildren(children)}
+    </TextInput>
+  )
+}
+
 export const renderMarkdown = (markdown: string) => {
   // Fallback component for unknown HTML elements
   const FallbackComponent = ({ children, node, ..._props }: any) => {
@@ -92,11 +110,7 @@ export const renderMarkdown = (markdown: string) => {
   const components = new Proxy(
     {
       // React Native compatible components - GitHub markdown style
-      p: ({ children, node, ...props }: any) => (
-        <TextInput className="mb-4 text-base text-label" multiline readOnly {...props}>
-          {renderTextChildren(children)}
-        </TextInput>
-      ),
+      p: MarkdownParagraph,
       h1: ({ children, node, ...props }: any) => (
         <TextInput
           readOnly
@@ -169,11 +183,24 @@ export const renderMarkdown = (markdown: string) => {
       ),
       li: ({ children, node, ordered, index, ...props }: any) => {
         const bullet = ordered ? `${(index || 0) + 1}.` : "•"
+        // Loose lists contain paragraphs; block children must not be nested inside Text.
+        const hasBlockChildren = node?.children?.some(
+          (child: { type: string; tagName?: string }) =>
+            child.type === "element" &&
+            child.tagName !== undefined &&
+            ["p", "ul", "ol", "blockquote", "pre"].includes(child.tagName),
+        )
         return (
           <View className="mb-1 flex-row items-start" {...props}>
             <Text className="mt-0 min-w-[24px] text-base text-label">{bullet}</Text>
             <View className="flex-1">
-              <Text className="text-base text-label">{renderTextChildren(children)}</Text>
+              <ListItemContext.Provider value={true}>
+                {hasBlockChildren ? (
+                  wrapText(children)
+                ) : (
+                  <Text className="text-base text-label">{renderTextChildren(children)}</Text>
+                )}
+              </ListItemContext.Provider>
             </View>
           </View>
         )
