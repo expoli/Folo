@@ -129,7 +129,6 @@ class SummaryActions implements Resetable, Hydratable {
       }
     })
   }
-
   async reset() {
     const tx = createTransaction()
     tx.store(() => {

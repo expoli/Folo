@@ -101,7 +101,6 @@ describe("local AI gateway wiring", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
-    ChatSliceActions.setActiveInstance(null)
   })
 
   test("starts from the build-time address", () => {
@@ -277,7 +276,6 @@ describe("direct mode wiring", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
-    ChatSliceActions.setActiveInstance(null)
   })
 
   test("switches the runtime to the direct endpoint and keeps the fields saved", () => {

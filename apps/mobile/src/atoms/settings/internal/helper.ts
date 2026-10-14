@@ -1,16 +1,64 @@
+import { UserRole } from "@follow/constants"
 import { useRefValue } from "@follow/hooks"
+import { getSettingPaidLevel, SettingPaidLevels } from "@follow/shared/settings/constants"
+import { isLocalAIEnabled } from "@follow/store/ai-local/config"
+import { useUserStore } from "@follow/store/user/store"
 import { createAtomHooks } from "@follow/utils"
 import { EventBus } from "@follow/utils/event-bus"
 import type { SetStateAction, WritableAtom } from "jotai"
 import { atom as jotaiAtom, useAtomValue } from "jotai"
 import { atomWithStorage, selectAtom } from "jotai/utils"
-import { useMemo } from "react"
+import { useMemo, useSyncExternalStore } from "react"
 import { shallow } from "zustand/shallow"
 
 import { JotaiPersistSyncStorage } from "@/src/lib/jotai"
 
 const getStorageNS = (settingKey: string) => `follow-rn-${settingKey}`
 type Nullable<T> = T | null | undefined
+type Role = UserRole | null
+
+/**
+ * Whether a role can use a setting of this paid level, as on desktop. Only a role known to lack
+ * the plan locks it: the role loads after the app renders and is unknown while signed out, and
+ * the saved values keep working meanwhile.
+ */
+const canUsePaidLevel = (requiredLevel: SettingPaidLevels | undefined, role: Role) =>
+  requiredLevel === undefined ||
+  requiredLevel === SettingPaidLevels.Free ||
+  requiredLevel === SettingPaidLevels.FreeLimited ||
+  (role !== UserRole.Free && role !== UserRole.Trial)
+
+const roleSelector = (state: { role: Role }) => state.role
+// Re-renders the setting hooks when the role changes, as the values they read depend on it
+const useRole = () => useUserStore(roleSelector)
+const getRole = () => useUserStore.getState().role
+
+/**
+ * The settings a self-provided local runtime answers for. The paid levels cover Folo's own
+ * service, so while local AI is configured these stay usable on any plan: they have to be
+ * switchable on and off, and their saved values have to keep applying. Turning local AI off
+ * restores the plan's limits; the saved values stay either way.
+ */
+const LOCAL_AI_SERVED_SETTINGS: Partial<Record<string, readonly string[]>> = {
+  general: ["translation", "translationMode"],
+}
+
+const isLocalAIServed = (settingKey: string, key: string) =>
+  LOCAL_AI_SERVED_SETTINGS[settingKey]?.includes(key) ?? false
+
+/**
+ * Re-renders the setting hooks when local AI is switched, as the values they read depend on it.
+ * The runtime config is a module value rather than a store, and the AI setting change is what
+ * applies it (`subscribeLocalAISettings`), so that change is what this listens to.
+ */
+const subscribeToLocalAIRuntime = (onStoreChange: () => void) =>
+  EventBus.subscribe("SETTING_CHANGE_EVENT", (event) => {
+    const { key, payload } = event as { key: string; payload: Record<string, unknown> }
+    if (key === "ai" && "localGateway" in payload) onStoreChange()
+  })
+
+const useLocalAIEnabled = () =>
+  useSyncExternalStore(subscribeToLocalAIRuntime, isLocalAIEnabled, isLocalAIEnabled)
 
 export const createSettingAtom = <T extends object>(
   settingKey: string,
@@ -25,10 +73,49 @@ export const createSettingAtom = <T extends object>(
     },
   ) as WritableAtom<T, [SetStateAction<T>], void>
 
-  const [, , useSettingValue, , getSettings, setSettings] = createAtomHooks(atom)
+  const [, , useSettingValueRaw, , getSettingsRaw, setSettings] = createAtomHooks(atom)
+
+  const defaults = createDefaultSettings() as Record<string, unknown>
+  // The defaults of the paid settings, which a plan without them reads
+  const paidSettingDefaults = new Map(
+    Object.keys(defaults)
+      .filter((key) => getSettingPaidLevel(settingKey, key) !== undefined)
+      .map((key) => [key, defaults[key]]),
+  )
+
+  const isLocked = (key: string, role: Role, localAIEnabled: boolean) =>
+    paidSettingDefaults.has(key) &&
+    !(localAIEnabled && isLocalAIServed(settingKey, key)) &&
+    !canUsePaidLevel(getSettingPaidLevel(settingKey, key), role)
+
+  /**
+   * A paid setting the plan lacks reads as its default, as on desktop. The saved value is kept
+   * and applies again once the plan includes the setting.
+   */
+  const resolveAccessibleValue = (
+    key: string,
+    value: unknown,
+    role: Role,
+    localAIEnabled: boolean,
+  ) => (isLocked(key, role, localAIEnabled) ? paidSettingDefaults.get(key) : value)
+
+  const sanitizeSettings = (settings: T, role: Role, localAIEnabled: boolean): T => {
+    const raw = settings as Record<string, unknown>
+    let sanitized: Record<string, unknown> | null = null
+
+    for (const key of paidSettingDefaults.keys()) {
+      const value = resolveAccessibleValue(key, raw[key], role, localAIEnabled)
+      if (value !== raw[key]) {
+        if (!sanitized) sanitized = { ...raw }
+        sanitized[key] = value
+      }
+    }
+
+    return (sanitized ?? raw) as T
+  }
 
   const initializeDefaultSettings = () => {
-    const currentSettings = getSettings()
+    const currentSettings = getSettingsRaw()
     const defaultSettings = createDefaultSettings()
     if (typeof currentSettings !== "object") setSettings(defaultSettings)
     const newSettings = { ...defaultSettings, ...currentSettings }
@@ -52,7 +139,13 @@ export const createSettingAtom = <T extends object>(
       selectedAtom = noopAtom
     }
 
-    return useAtomValue(selectedAtom) as ReturnType<typeof getSettings>[T]
+    const value = useAtomValue(selectedAtom) as ReturnType<typeof getSettings>[T]
+    const role = useRole()
+    const localAIEnabled = useLocalAIEnabled()
+    if (!key) return value
+    return resolveAccessibleValue(String(key), value, role, localAIEnabled) as ReturnType<
+      typeof getSettings
+    >[T]
   }
 
   const useSettingKey = <T extends keyof ReturnType<typeof getSettings>>(key: T) => {
@@ -105,23 +198,46 @@ export const createSettingAtom = <T extends object>(
     selector: (s: S) => R,
   ): R => {
     const stableSelector = useRefValue(selector)
+    const role = useRole()
+    const localAIEnabled = useLocalAIEnabled()
 
     return useAtomValue(
-      // @ts-expect-error
-      useMemo(() => selectAtom(atom, stableSelector.current, shallow), [stableSelector]),
+      useMemo(
+        () =>
+          selectAtom(
+            atom,
+            (state) => stableSelector.current(sanitizeSettings(state, role, localAIEnabled) as S),
+            shallow,
+          ),
+        [stableSelector, role, localAIEnabled],
+      ),
     )
   }
 
+  /** Whether the user's plan lacks this paid setting */
+  const usePaidSettingLocked = (key: keyof ReturnType<typeof getSettings>) =>
+    isLocked(String(key), useRole(), useLocalAIEnabled())
+
+  /**
+   * Saves a setting. While the plan lacks a paid setting, only its default is saved: the setting
+   * can be turned off but not on.
+   */
   const setSetting = <K extends keyof ReturnType<typeof getSettings>>(
     key: K,
     value: ReturnType<typeof getSettings>[K],
   ) => {
+    if (
+      isLocked(String(key), getRole(), isLocalAIEnabled()) &&
+      value !== paidSettingDefaults.get(String(key))
+    ) {
+      return
+    }
     const updated = Date.now()
 
     // The state is written first: a subscriber of `SETTING_CHANGE_EVENT` rereads the settings to
     // act on the change, and dispatching before the write would hand it the previous value.
     setSettings({
-      ...getSettings(),
+      ...getSettingsRaw(),
       [key]: value,
 
       updated,
@@ -139,6 +255,18 @@ export const createSettingAtom = <T extends object>(
     setSettings(createDefaultSettings())
   }
 
+  const useSettingValue = () => {
+    const value = useSettingValueRaw()
+    const role = useRole()
+    const localAIEnabled = useLocalAIEnabled()
+    return useMemo(
+      () => sanitizeSettings(value, role, localAIEnabled),
+      [value, role, localAIEnabled],
+    )
+  }
+
+  const getSettings = () => sanitizeSettings(getSettingsRaw(), getRole(), isLocalAIEnabled())
+
   Object.defineProperty(useSettingValue, "select", {
     value: useSettingSelector,
   })
@@ -146,6 +274,7 @@ export const createSettingAtom = <T extends object>(
   return {
     useSettingKey,
     useSettingSelector,
+    usePaidSettingLocked,
     setSetting,
     clearSettings,
     initializeDefaultSettings,
@@ -158,6 +287,7 @@ export const createSettingAtom = <T extends object>(
   } as {
     useSettingKey: typeof useSettingKey
     useSettingSelector: typeof useSettingSelector
+    usePaidSettingLocked: typeof usePaidSettingLocked
     setSetting: typeof setSetting
     clearSettings: typeof clearSettings
     initializeDefaultSettings: typeof initializeDefaultSettings

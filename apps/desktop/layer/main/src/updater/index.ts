@@ -6,9 +6,10 @@ import type { AppUpdater, UpdateInfo } from "electron-updater"
 import { autoUpdater as defaultAutoUpdater } from "electron-updater"
 
 import { GITHUB_OWNER, GITHUB_REPO } from "~/constants/app"
+import { t } from "~/lib/i18n"
 import { WindowManager } from "~/manager/window"
 
-import { channel, isWindows } from "../env"
+import { channel, isMacOS, isWindows } from "../env"
 import { appUpdaterConfig } from "./configs"
 import { WindowsUpdater } from "./windows-updater"
 
@@ -52,7 +53,7 @@ export const getReleasePageUrl = (version: string, tag?: null | string) =>
 
 export class FollowUpdater {
   private readonly disabled: boolean
-  private checkingUpdate = false
+  private checkingUpdatePromise: Promise<UpdateCheckResult> | null = null
   private downloadingUpdate = false
 
   private pollingTimer: NodeJS.Timeout | null = null
@@ -113,13 +114,22 @@ export class FollowUpdater {
       return { hasUpdate: false }
     }
 
-    if (this.checkingUpdate) {
-      logger.info("Update check already in progress, skipping")
-      return { hasUpdate: false }
+    // A check started while another runs, such as one from the menu during the background
+    // check at launch, waits for that one instead of reporting no update
+    if (this.checkingUpdatePromise) {
+      logger.info("Update check already in progress, waiting for it")
+      return this.checkingUpdatePromise
     }
 
-    this.checkingUpdate = true
+    this.checkingUpdatePromise = this.runUpdateCheck()
+    try {
+      return await this.checkingUpdatePromise
+    } finally {
+      this.checkingUpdatePromise = null
+    }
+  }
 
+  private async runUpdateCheck(): Promise<UpdateCheckResult> {
     try {
       const result = await this.autoUpdater.checkForUpdates()
 
@@ -142,14 +152,21 @@ export class FollowUpdater {
     } catch (error) {
       logger.error("Failed to check for updates", error)
       return { hasUpdate: false, error: error instanceof Error ? error.message : "Unknown error" }
-    } finally {
-      this.checkingUpdate = false
     }
   }
 
   quitAndInstall() {
     const mainWindow = WindowManager.getMainWindow()
     logger.info("Quit and install triggered", { windowId: mainWindow?.id })
+
+    if (!isMacOS) {
+      // Destroying the last window would quit the app right away, and the update would then be
+      // installed silently on quit without relaunching the app. Quitting to install destroys the
+      // windows before they can cancel the quit.
+      this.autoUpdater.quitAndInstall()
+      return
+    }
+
     WindowManager.destroyMainWindow()
 
     setTimeout(() => {
@@ -249,5 +266,21 @@ export const registerUpdater = () => {
 }
 
 export const checkForAppUpdates = () => followUpdater.checkForUpdates()
+
+/** A check the user asked for from the menu or the tray, which tells them how it went. */
+export const checkForAppUpdatesFromMenu = async () => {
+  const result = await checkForAppUpdates()
+  const mainWindow = WindowManager.getMainWindow()
+  if (!mainWindow || mainWindow.isDestroyed()) return
+
+  const { toast } = callWindowExpose(mainWindow)
+  if (result.error) {
+    toast.error(t("update.checkFailed"))
+  } else if (result.hasUpdate) {
+    toast.success(t("update.available"))
+  } else {
+    toast.info(t("update.upToDate"))
+  }
+}
 
 export const quitAndInstall = () => followUpdater.quitAndInstall()

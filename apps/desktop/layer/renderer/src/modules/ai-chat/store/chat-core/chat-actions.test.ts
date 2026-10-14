@@ -8,16 +8,21 @@ import { useEntryStore } from "@follow/store/entry/store"
 import type { EntryModel } from "@follow/store/entry/types"
 import { createDesktopAPIHeaders } from "@follow/utils/headers"
 import type { ChatTransport } from "ai"
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, test, vi } from "vitest"
 
 import { createAIChatStore } from "../store"
 import type { BizUIMessage } from "../types"
+import { ChatSliceActions } from "./chat-actions"
+import type { ZustandChat } from "./chat-instance"
+import type { ChatSlice } from "./types"
 
-const { markSessionSyncedMock, ensureSessionMock, replaceAllMessagesMock } = vi.hoisted(() => ({
-  markSessionSyncedMock: vi.fn(),
-  ensureSessionMock: vi.fn(),
-  replaceAllMessagesMock: vi.fn(),
-}))
+const { markSessionSyncedMock, ensureSessionMock, replaceAllMessagesMock, getChatSessionMock } =
+  vi.hoisted(() => ({
+    markSessionSyncedMock: vi.fn(),
+    ensureSessionMock: vi.fn(async () => {}),
+    replaceAllMessagesMock: vi.fn(),
+    getChatSessionMock: vi.fn(),
+  }))
 
 const { getFeedsMock } = vi.hoisted(() => ({ getFeedsMock: vi.fn() }))
 
@@ -30,6 +35,7 @@ vi.mock("../../services", () => ({
     markSessionSynced: markSessionSyncedMock,
     ensureSession: ensureSessionMock,
     replaceAllMessages: replaceAllMessagesMock,
+    getChatSession: getChatSessionMock,
   },
 }))
 
@@ -426,5 +432,54 @@ describe("ChatSliceActions.recreateTransport", () => {
         headers: expect.objectContaining({ authorization: "Bearer token-2" }),
       }),
     )
+  })
+})
+
+type TestState = Pick<ChatSlice, "chatId" | "currentTitle">
+
+const createActions = (state: TestState, messages: unknown[] = [{ id: "m1", parts: [] }]) => {
+  const set = (updater: (state: TestState) => TestState) => {
+    Object.assign(state, updater(state))
+  }
+  const get = () => state
+  const chatInstance = { chatState: { messages } } as unknown as ZustandChat
+  return new ChatSliceActions([set, get, {}] as never, { chatInstance, hasChatId: false })
+}
+
+describe("ChatSliceActions.adoptStoredTitle", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    getChatSessionMock.mockResolvedValue({ chatId: "chat-1", title: "9 PM Oct 12, 2026 chat" })
+  })
+
+  it("names an untitled chat after its stored session, as the chat history does", async () => {
+    const state: TestState = { chatId: "chat-1", currentTitle: undefined }
+    await createActions(state).adoptStoredTitle("chat-1")
+
+    expect(ensureSessionMock).toHaveBeenCalledWith("chat-1")
+    expect(state.currentTitle).toBe("9 PM Oct 12, 2026 chat")
+  })
+
+  it("keeps a title the chat already has", async () => {
+    const state: TestState = { chatId: "chat-1", currentTitle: "Generated title" }
+    await createActions(state).adoptStoredTitle("chat-1")
+
+    expect(state.currentTitle).toBe("Generated title")
+    expect(getChatSessionMock).not.toHaveBeenCalled()
+  })
+
+  it("leaves an empty chat and a chat that is no longer shown alone", async () => {
+    const empty: TestState = { chatId: "chat-1", currentTitle: undefined }
+    await createActions(empty, []).adoptStoredTitle("chat-1")
+    expect(empty.currentTitle).toBeUndefined()
+
+    const switched: TestState = { chatId: "chat-1", currentTitle: undefined }
+    const actions = createActions(switched)
+    getChatSessionMock.mockImplementation(async () => {
+      switched.chatId = "chat-2"
+      return { chatId: "chat-1", title: "Old chat" }
+    })
+    await actions.adoptStoredTitle("chat-1")
+    expect(switched.currentTitle).toBeUndefined()
   })
 })

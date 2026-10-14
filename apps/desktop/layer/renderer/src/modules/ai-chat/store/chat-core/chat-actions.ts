@@ -67,8 +67,9 @@ const loadFeedCandidates = async (chatId: string): Promise<LocalAIFeedCandidate[
 }
 
 export class ChatSliceActions {
-  // Hold reference to the most recently constructed (active) ChatSliceActions instance
-  private static _current: ChatSliceActions | null = null
+  // Mounted chat roots, the most recently mounted last. A closed modal or layout removes its
+  // own entry, so the previous chat becomes active again instead of a store nobody sees.
+  private static _activeStack: ChatSliceActions[] = []
 
   /**
    * Get the currently active ChatSliceActions instance.
@@ -77,15 +78,19 @@ export class ChatSliceActions {
    * This may be removed/refactored.
    */
   static getActiveInstance(): ChatSliceActions | null {
-    if (!this._current) return null
-    return this._current
+    return this._activeStack.at(-1) ?? null
   }
 
   /**
-   * See warning above — this setter exists solely for the same limited purpose.
+   * See warning above — this exists solely for the same limited purpose.
+   * @returns a function that removes the instance again when its chat root unmounts
    */
-  static setActiveInstance(instance: ChatSliceActions | null) {
-    this._current = instance
+  static activate(instance: ChatSliceActions) {
+    this._activeStack.push(instance)
+    return () => {
+      const index = this._activeStack.lastIndexOf(instance)
+      if (index !== -1) this._activeStack.splice(index, 1)
+    }
   }
 
   // Every mounted chat, so a settings change repoints all of them, not only the last mount.
@@ -107,6 +112,8 @@ export class ChatSliceActions {
   }
 
   private chatInstance: ZustandChat
+  // Bumped by every chat switch or new chat, so a slower earlier switch can tell it is outdated
+  private switchToken = 0
   constructor(
     private params: Parameters<StateCreator<ChatSlice, [], [], ChatSlice>>,
 
@@ -241,6 +248,26 @@ export class ChatSliceActions {
 
   getCurrentChatId = (): string | null => {
     return this.get().chatId
+  }
+
+  /**
+   * Name a chat that is still untitled after a reply the way the chat history names it. A reply
+   * that brought no generated title, such as a failed one, would otherwise leave "New Chat" in
+   * the header while the history lists the chat under its stored title.
+   */
+  adoptStoredTitle = async (chatId: string) => {
+    const isCurrentAndUntitled = () => this.get().chatId === chatId && !this.get().currentTitle
+    if (!isCurrentAndUntitled() || this.getMessages().length === 0) return
+
+    try {
+      await AIPersistService.ensureSession(chatId)
+      const session = await AIPersistService.getChatSession(chatId)
+      if (session?.title && isCurrentAndUntitled()) {
+        this.setCurrentTitle(session.title)
+      }
+    } catch (error) {
+      console.error("Failed to read the chat title:", error)
+    }
   }
 
   private createTransportTitleHandler = (chatId: string) => {
@@ -461,6 +488,7 @@ export class ChatSliceActions {
   }
 
   newChat = async () => {
+    this.switchToken++
     const newChatId = nanoid()
     // Cleanup old chat instance
     await this.chatInstance.destroy()
@@ -496,9 +524,12 @@ export class ChatSliceActions {
   }
 
   switchToChat = async (chatId: string) => {
+    const token = ++this.switchToken
+    const isOutdated = () => token !== this.switchToken
     try {
       // Cleanup old chat instance
       await this.chatInstance.destroy()
+      if (isOutdated()) return
       // Set loading state (using ready as there's no loading status in ChatStatus)
       this.setStatus("ready")
       this.setError(undefined)
@@ -506,6 +537,7 @@ export class ChatSliceActions {
       // Load session and messages in parallel to reduce database queries
       const { session: chatSession, messages } =
         await AIPersistService.loadSessionWithMessages(chatId)
+      if (isOutdated()) return
 
       // Create new chat instance with loaded messages
       const newChatInstance = new ZustandChat(
@@ -533,10 +565,14 @@ export class ChatSliceActions {
         syncStatus: chatSession ? chatSession.syncStatus : "local",
       }))
 
-      await newChatInstance.resumeStream()
-      // Update the reference
+      // Take over before resuming: resumeStream only settles when the resumed answer has
+      // finished, and stop, send or newChat must reach this instance meanwhile
       this.chatInstance = newChatInstance
+      newChatInstance.resumeStream().catch((error) => {
+        console.error("Failed to resume the chat stream:", error)
+      })
     } catch (error) {
+      if (isOutdated()) return
       console.error("Failed to switch to chat:", error)
       this.setError(error as Error)
       this.setStatus("ready")

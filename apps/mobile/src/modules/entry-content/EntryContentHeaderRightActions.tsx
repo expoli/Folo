@@ -1,3 +1,5 @@
+import { FeedViewType, UserRole } from "@follow/constants"
+import { isLocalAIEnabled } from "@follow/store/ai-local/config"
 import { useIsEntryStarred } from "@follow/store/collection/hooks"
 import { collectionSyncService } from "@follow/store/collection/store"
 import { useEntry } from "@follow/store/entry/hooks"
@@ -5,7 +7,7 @@ import { entrySyncServices } from "@follow/store/entry/store"
 import { useFeedById } from "@follow/store/feed/hooks"
 import { useSubscriptionById } from "@follow/store/subscription/hooks"
 import { translationActions, translationSyncService } from "@follow/store/translation/store"
-import { useIsLoggedIn } from "@follow/store/user/hooks"
+import { useIsLoggedIn, useUserRole } from "@follow/store/user/hooks"
 import { setStringAsync } from "expo-clipboard"
 import { useAtom } from "jotai"
 import { useCallback, useEffect, useState } from "react"
@@ -32,7 +34,9 @@ import { hideIntelligenceGlowEffect, openLink } from "@/src/lib/native"
 import { useNavigation } from "@/src/lib/navigation/hooks"
 import { createLinkShareContent } from "@/src/lib/share"
 import { toast } from "@/src/lib/toast"
+import { showUpgradeRequiredDialog } from "@/src/modules/dialogs/UpgradeRequiredDialog"
 import { playEntryTts } from "@/src/modules/player/entry-tts"
+import { getSelectedView } from "@/src/modules/screen/atoms"
 import { ReadingScreen } from "@/src/modules/settings/routes/Reading"
 
 import { useEntryContentContext } from "./ctx"
@@ -65,6 +69,7 @@ const HeaderRightActionsImpl = ({
   isHeaderTitleVisible,
 }: HeaderRightActionsProps) => {
   const { t } = useTranslation()
+  const { t: tSettings } = useTranslation("settings")
   const navigation = useNavigation()
   const labelColor = useColor("label")
   const isLoggedIn = useIsLoggedIn()
@@ -87,6 +92,11 @@ const HeaderRightActionsImpl = ({
   const [showReadability, setShowReadability] = useAtom(showReadabilityAtom)
   const [showSummary, setShowSummary] = useAtom(showAISummaryAtom)
   const showAISummarySetting = useGeneralSettingKey("summary")
+  const userRole = useUserRole()
+  // Free plans don't include Folo's AI translation, so neither the setting nor an action
+  // translates; a self-provided endpoint answers instead of Folo, so it is not locked.
+  const isTranslationLocked =
+    (userRole === UserRole.Free || userRole === UserRole.Trial) && !isLocalAIEnabled()
   const translationMode = useGeneralSettingKey("translationMode")
   const showReadabilitySetting = !!entry?.settings?.readability
 
@@ -94,13 +104,15 @@ const HeaderRightActionsImpl = ({
   const subscription = useSubscriptionById(feed?.feedId as string)
 
   const handleToggleStar = () => {
-    if (!entry || !feed || !subscription) return
+    if (!entry) return
 
     isStarred
       ? collectionSyncService.unstarEntry({ entryId })
       : collectionSyncService.starEntry({
           entryId,
-          view: subscription.view,
+          // An entry read through a list, a preview or an unfollowed feed has no subscription,
+          // so it is starred in the view it was opened from
+          view: subscription?.view ?? getSelectedView() ?? FeedViewType.Articles,
         })
   }
 
@@ -112,6 +124,13 @@ const HeaderRightActionsImpl = ({
   }
 
   const toggleAITranslation = () => {
+    if (isTranslationLocked) {
+      showUpgradeRequiredDialog({
+        title: tSettings("general.action.translation.label"),
+        message: tSettings("control.paid_badge.basic_or_higher"),
+      })
+      return
+    }
     translationSyncService.generateTranslation({
       entryId,
       language: getActionLanguage(),
@@ -158,7 +177,7 @@ const HeaderRightActionsImpl = ({
   // Define action items for reuse
   const actionItems = [
     isLoggedIn &&
-      subscription && {
+      !!entry && {
         key: "Star",
         title: isStarred ? t("operation.unstar") : t("operation.star"),
         icon: isStarred ? <StarCuteFiIcon /> : <StarCuteReIcon />,
@@ -190,15 +209,13 @@ const HeaderRightActionsImpl = ({
       active: showSummary,
       isCheckbox: true,
     },
-    // Always offered, also while translations are generated automatically: the automatic path
-    // translates the title only, so this is the way to translate the article itself.
     isLoggedIn && {
       key: "ShowTranslation",
       title: t("entry_content.header.show_translation"),
       icon: <Translate2CuteReIcon />,
       iconIOS: { name: "globe" },
       onPress: toggleAITranslation,
-      active: showTranslation,
+      active: showTranslation && !isTranslationLocked,
       isCheckbox: true,
     },
     // Only meaningful while a translation is on screen: it replaces the cached text with a fresh
@@ -269,6 +286,11 @@ const HeaderRightActionsImpl = ({
           opacity: interpolate(titleOpacityShareValue.value, [0, 1], [1, 0]),
         }))}
         className="absolute right-[32px] z-10 flex-row gap-2"
+        // Faded out once the title shows in the header, where Android would still let them be
+        // tapped and screen readers would still find them
+        pointerEvents={isHeaderTitleVisible ? "none" : "box-none"}
+        accessibilityElementsHidden={isHeaderTitleVisible}
+        importantForAccessibility={isHeaderTitleVisible ? "no-hide-descendants" : "auto"}
       >
         {actionItems
           .filter((item) => !item.inMenu)

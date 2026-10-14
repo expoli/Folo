@@ -71,10 +71,16 @@ export const AIChatRoot: FC<AIChatRootProps> = ({
   const chatActions = useAiContextStore((state) => state.chatActions)
 
   useEffect(() => {
+    // The registration keeps every mounted chat repointable when the gateway settings change;
+    // activating makes this root the one the shortcuts talk to, and restores the previous root
+    // when it unmounts.
     ChatSliceActions.registerInstance(chatActions)
-    ChatSliceActions.setActiveInstance(chatActions)
+    const deactivate = ChatSliceActions.activate(chatActions)
 
-    return () => ChatSliceActions.unregisterInstance(chatActions)
+    return () => {
+      deactivate()
+      ChatSliceActions.unregisterInstance(chatActions)
+    }
   }, [chatActions])
 
   const Element = (
