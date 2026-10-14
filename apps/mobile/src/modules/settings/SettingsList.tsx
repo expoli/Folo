@@ -174,7 +174,6 @@ const DataGroupNavigationLinks: GroupNavigationLink[] = [
     },
     iconBackgroundColor: "#9333EA",
     anonymous: false,
-    trialNotAllowed: true,
   },
 
   {
@@ -197,7 +196,6 @@ const DataGroupNavigationLinks: GroupNavigationLink[] = [
     },
     iconBackgroundColor: "#0EA5E9",
     anonymous: false,
-    trialNotAllowed: true,
   },
 ]
 
