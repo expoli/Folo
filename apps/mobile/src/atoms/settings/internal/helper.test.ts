@@ -1,8 +1,10 @@
 import { UserRole } from "@follow/constants"
-import { configureLocalAI, resetLocalAI } from "@follow/store/ai-local/config"
+import { configureLocalAI, isLocalAIEnabled, resetLocalAI } from "@follow/store/ai-local/config"
 import { useUserStore } from "@follow/store/user/store"
 import { jotaiStore } from "@follow/utils"
 import { EventBus } from "@follow/utils/event-bus"
+import { createElement, useSyncExternalStore } from "react"
+import { renderToStaticMarkup } from "react-dom/server"
 import { beforeEach, describe, expect, it, test, vi } from "vitest"
 
 import { createSettingAtom } from "./helper"
@@ -15,6 +17,11 @@ const mocks = vi.hoisted(() => {
     dispatch: vi.fn(),
     listeners: new Set<(payload: unknown) => void>(),
   }
+})
+
+vi.mock("react", async (importOriginal) => {
+  const react = await importOriginal<typeof import("react")>()
+  return { ...react, useSyncExternalStore: vi.fn(react.useSyncExternalStore) }
 })
 
 vi.mock("@/src/lib/jotai", () => ({
@@ -217,6 +224,53 @@ describe("createSettingAtom paid settings with local AI", () => {
     setSetting("hidePrivateSubscriptionsInTimeline", true)
 
     expect(saved().hidePrivateSubscriptionsInTimeline).toBe(false)
+  })
+})
+
+describe("local AI settings hook subscription", () => {
+  it("notifies on local runtime changes only, and unsubscribes on cleanup", () => {
+    resetLocalAI()
+    setRole(UserRole.Free)
+    vi.mocked(useSyncExternalStore).mockClear()
+    const settings = createSettingAtom("general", createDefaults)
+    function Probe() {
+      return createElement("span", null, String(settings.usePaidSettingLocked("translation")))
+    }
+    renderToStaticMarkup(createElement(Probe))
+
+    const hookCall = vi
+      .mocked(useSyncExternalStore)
+      .mock.calls.find(([, getSnapshot]) => getSnapshot === isLocalAIEnabled)
+    expect(hookCall).toBeDefined()
+    const notify = vi.fn()
+    const unsubscribe = hookCall![0](notify)
+    const dispatchSettingChange = EventBus.dispatch as unknown as (
+      event: string,
+      data: { key: string; payload: Record<string, unknown> },
+    ) => void
+    const dispatch = (key: string, payload: Record<string, unknown>) =>
+      dispatchSettingChange("SETTING_CHANGE_EVENT", { key, payload })
+
+    try {
+      dispatch("general", { translation: true })
+      dispatch("ai", { unrelated: true })
+      expect(notify).not.toHaveBeenCalled()
+
+      enableLocalAI()
+      dispatch("ai", { localGateway: { enabled: true } })
+      expect(notify).toHaveBeenCalledTimes(1)
+      expect(hookCall![1]()).toBe(true)
+
+      resetLocalAI()
+      dispatch("ai", { localGateway: { enabled: false } })
+      expect(notify).toHaveBeenCalledTimes(2)
+      expect(hookCall![1]()).toBe(false)
+    } finally {
+      unsubscribe()
+      resetLocalAI()
+    }
+    dispatch("ai", { localGateway: { enabled: true } })
+    expect(notify).toHaveBeenCalledTimes(2)
   })
 })
 
