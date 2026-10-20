@@ -18,6 +18,7 @@ import { dedupeManagedAuthCookies } from "../lib/auth-cookies"
 import { isDeepLink, openDeepLink, setDeepLinkHandler } from "../lib/deep-link"
 import { handleUrlRouting } from "../lib/router"
 import { updateNotificationsToken } from "../lib/user"
+import { startLocalAgentReading } from "../local-agent-reading"
 import { logger } from "../logger"
 import { cleanupOldRender } from "../updater/hot-updater"
 import { AppManager } from "./app"
@@ -139,6 +140,12 @@ export class BootstrapManager {
       })
 
       WindowManager.getMainWindowOrCreate()
+
+      // The loopback endpoint of the local agent reading feature. It is off unless the user turned
+      // it on, and a failure to listen must not keep the app from starting.
+      await startLocalAgentReading().catch((error) => {
+        logger.error("Failed to start the local agent reading endpoint:", error)
+      })
 
       // Removing old renderer bundles can be slow, or fail on Windows when a file is in use, so it
       // runs after the window opens

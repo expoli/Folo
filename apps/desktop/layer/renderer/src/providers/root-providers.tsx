@@ -31,6 +31,7 @@ import {
   LazyPWAPrompt,
   LazyReloadPrompt,
 } from "./lazy/index"
+import { LocalAgentReadingProvider } from "./local-agent-reading-provider"
 import { ServerConfigsProvider } from "./server-configs-provider"
 import { SettingSync } from "./setting-sync"
 import { UserProvider } from "./user-provider"
@@ -56,6 +57,7 @@ export const RootProviders: FC<PropsWithChildren> = ({ children }) => (
                   <FollowCommandManager />
                   <ReviewPromptProvider />
                   <ExtensionExposeProvider />
+                  <LocalAgentReadingProvider />
 
                   {import.meta.env.DEV && <Devtools />}
 

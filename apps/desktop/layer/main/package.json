@@ -31,6 +31,7 @@
     "@follow/shared": "workspace:*",
     "@follow/store": "workspace:*",
     "@follow/utils": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.32.1",
     "builder-util-runtime": "9.7.0",
     "electron-context-menu": "5.1.0",
     "electron-ipc-decorator": "1.0.2",

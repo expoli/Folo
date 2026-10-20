@@ -9,6 +9,8 @@ type StoreData = {
   cacheSizeLimit?: number | null
   cliSyncEnabled?: boolean | null
   eagleContextMenuEnabled?: boolean | null
+  localAgentReadingEnabled?: boolean | null
+  localAgentReadingSourcePageEnabled?: boolean | null
   minimizeToTray?: boolean | null
   proxy?: string | null
   qbittorrentSID?: string | null

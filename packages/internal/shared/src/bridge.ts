@@ -3,6 +3,7 @@ import type { BrowserWindow } from "electron"
 import { useEffect, useLayoutEffect, useRef } from "react"
 import type { toast } from "sonner"
 
+import type { LocalAgentReadingBridge } from "./local-agent-reading"
 import type { GeneralSettings, UISettings } from "./settings/interface"
 
 const PREFIX = "__follow"
@@ -34,7 +35,12 @@ export interface DistributionUpdateNotice {
   currentVersion: string | null
 }
 
-interface RenderGlobalContext {
+/**
+ * Methods the renderer exposes to the main process. The local agent reading group answers the
+ * loopback MCP endpoint: the main process owns the endpoint, the renderer owns the account data
+ * it needs.
+ */
+interface RenderGlobalContext extends LocalAgentReadingBridge {
   /// Access Settings
   showSetting: (path?: string) => void
   getGeneralSettings: () => GeneralSettings

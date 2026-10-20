@@ -7,6 +7,7 @@ import { CliService } from "./services/cli"
 import { DebugService } from "./services/debug"
 import { DockService } from "./services/dock"
 import { IntegrationService } from "./services/integration"
+import { LocalAgentReadingIpcService } from "./services/local-agent-reading"
 import { LocalAIService } from "./services/local-ai"
 import { MenuService } from "./services/menu"
 import { ReaderService } from "./services/reader"
@@ -20,6 +21,7 @@ const services = createServices([
   DebugService,
   DockService,
   LocalAIService,
+  LocalAgentReadingIpcService,
   MenuService,
   ReaderService,
   SettingService,
