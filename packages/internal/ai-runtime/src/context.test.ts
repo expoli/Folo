@@ -9,7 +9,7 @@ import {
   pendingEntryTexts,
   toModelMessages,
 } from "./context"
-import { DEFAULT_CHAT_SYSTEM_PROMPT, languageName, NO_CONTEXT_NOTE } from "./prompts"
+import { DEFAULT_CHAT_SYSTEM_PROMPT, languageName, NO_CONTEXT_NOTE, TOOLS_NOTE } from "./prompts"
 
 describe("messageText", () => {
   test("joins text and rich-text data parts", () => {
@@ -282,6 +282,20 @@ describe("buildChatSystemPrompt", () => {
     expect(prompt).toContain("folo_begin_unread_scan")
     // The old note would explicitly talk the model out of calling them.
     expect(prompt).not.toContain(NO_CONTEXT_NOTE)
+  })
+
+  test("points title-only entries at the tool that reads them", () => {
+    // A wide selection carries text for part of it; answering from the coverage line instead of
+    // reading the rest is exactly what this sentence forbids.
+    expect(TOOLS_NOTE).toContain("title-only")
+    expect(TOOLS_NOTE).toContain("folo_get_entry_contents")
+  })
+
+  test("offers the digest and asks for honest coverage", () => {
+    expect(TOOLS_NOTE).toContain("folo_unread_digest")
+    // A partial enumeration must be reported, not silently presented as the whole account.
+    expect(TOOLS_NOTE).toContain("partial")
+    expect(TOOLS_NOTE).toContain("which part was covered")
   })
 })
 

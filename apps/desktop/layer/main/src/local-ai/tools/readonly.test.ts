@@ -39,15 +39,18 @@ describe("local AI tools are read-only", () => {
     expect(FORBIDDEN.filter((needle) => source.includes(needle))).toEqual([])
   })
 
-  test("only the four reading tools are exposed", () => {
+  test("only the reading tools and the digest are exposed", () => {
     const source = sourceOf("folo.ts")
     expect(source).toContain("createFoloReadingTools")
-    // Anything else would need its own read-only argument, not a quiet addition here.
+    // The four the endpoint serves, named literally so a rename is caught here.
     expect(source.match(/folo_[a-z_]+:/g)?.sort()).toEqual([
       "folo_begin_unread_scan:",
       "folo_get_entry_contents:",
       "folo_get_status:",
       "folo_list_scan_entries:",
     ])
+    // The digest is the only addition, and it is named by its shared constant; a new tool would
+    // have to be added to this list with an argument for why it cannot write.
+    expect(source).toContain("[LOCAL_AI_DIGEST_TOOL_NAME]: tool({")
   })
 })

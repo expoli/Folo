@@ -510,6 +510,49 @@ export type LocalAgentReadingBeginScanArgs = z.infer<typeof localAgentReadingBeg
 export type LocalAgentReadingListArgs = z.infer<typeof localAgentReadingListArgsSchema>
 export type LocalAgentReadingContentsArgs = z.infer<typeof localAgentReadingContentsArgsSchema>
 
+// ---------------------------------------------------------------------------
+// The app's own digest tool
+//
+// Chat-only: the loopback endpoint does not serve it, and `LOCAL_AGENT_READING_TOOL_NAMES` stays
+// the endpoint's list. It lives here because its window names and scope have to stay in step with
+// the tools above, and because a relative window has to be resolved against a clock — which a model
+// cannot be trusted to do.
+// ---------------------------------------------------------------------------
+
+/** Windows a digest may ask for. Resolved against local time, the way a reader says "today". */
+export const LOCAL_AI_DIGEST_WINDOWS = ["today", "yesterday", "last24h", "last7d"] as const
+
+export type LocalAIDigestWindow = (typeof LOCAL_AI_DIGEST_WINDOWS)[number]
+
+export const LOCAL_AI_DIGEST_LIMITS = {
+  maxEntries: 30,
+  defaultEntries: 20,
+  maxBodiesPerEntry: 2000,
+  defaultBodiesPerEntry: 800,
+  /** Characters of entry text one digest may hand back, however many entries it names. */
+  resultChars: 24_000,
+} as const
+
+export const localAIDigestArgsSchema = z
+  .object({
+    window: z.enum(LOCAL_AI_DIGEST_WINDOWS).optional(),
+    scope: localAgentReadingScopeSchema.optional(),
+    limit: z.number().int().min(1).max(LOCAL_AI_DIGEST_LIMITS.maxEntries).optional(),
+    bodiesPerEntry: z
+      .number()
+      .int()
+      .min(0)
+      .max(LOCAL_AI_DIGEST_LIMITS.maxBodiesPerEntry)
+      .optional(),
+    mode: z.enum(["cached", "detail"]).optional(),
+  })
+  .strict()
+
+export type LocalAIDigestArgs = z.infer<typeof localAIDigestArgsSchema>
+
+/** Name of that tool, so the app and its tests agree on it without repeating the string. */
+export const LOCAL_AI_DIGEST_TOOL_NAME = "folo_unread_digest"
+
 /**
  * Why a tool could not answer. These are refusals the agent can act on (sign in, wait for the app,
  * start a new scan) rather than protocol errors.

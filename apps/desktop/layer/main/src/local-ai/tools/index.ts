@@ -8,13 +8,16 @@ import type { ToolSet } from "ai"
 
 import type { LocalAgentReadingToolHandlers } from "~/local-agent-reading/server"
 
+import type { FoloReadingToolOptions } from "./folo"
 import { createFoloReadingTools } from "./folo"
 
 /** Model round trips one chat may spend on tools before it has to answer. */
 export const LOCAL_AI_MAX_TOOL_STEPS = 6
 
-export const createLocalAITools = (handlers: LocalAgentReadingToolHandlers): ToolSet =>
-  createFoloReadingTools(handlers)
+export const createLocalAITools = (
+  handlers: LocalAgentReadingToolHandlers,
+  options: FoloReadingToolOptions = {},
+): ToolSet => createFoloReadingTools(handlers, options)
 
 /**
  * What the chat tools read through.

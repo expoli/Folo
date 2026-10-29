@@ -47,6 +47,9 @@ export const NO_CONTEXT_NOTE = [
  *
  * The order is the one the endpoint documents (status → scan → list → contents): a model that skips
  * the scan has nothing to list, and one that pages without a scan id is answered with an error.
+ *
+ * The last sentence closes the gap the coverage line leaves open: a wide selection only carries text
+ * for part of it, and a model that stops there answers about titles it never read.
  */
 export const TOOLS_NOTE = [
   "You can read the user's Folo account yourself with the provided tools: call folo_get_status",
@@ -54,7 +57,11 @@ export const TOOLS_NOTE = [
   "candidates with folo_list_scan_entries, and read their text with folo_get_entry_contents.",
   "Everything is read-only: reading never marks an entry as read. Anything the tools did not return",
   "is unknown to you — say so instead of guessing, and attribute what you report to the entries you",
-  "actually read.",
+  "actually read. When the coverage line reports entries as title-only and the user asks for detail,",
+  "read them with folo_get_entry_contents instead of summarising their titles. For a recap, call",
+  "folo_unread_digest once — it scans, lists and reads in one step. If a scan says its enumeration",
+  "was incomplete or a source was partial, say which part was covered instead of implying the whole",
+  "account was read.",
 ].join(" ")
 
 const LANGUAGE_NAMES: Record<string, string> = {
