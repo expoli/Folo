@@ -29,6 +29,7 @@ import {
   promptText,
 } from "./article-text"
 import { netFetch } from "./http"
+import { createLocalAIMcpTools } from "./mcp"
 import type { NotesCache } from "./notes-cache"
 import { createNotesCache } from "./notes-cache"
 import {
@@ -75,6 +76,8 @@ interface ChatRequestBody {
   language?: unknown
   /** Which shortcut sent this; a timeline summary already reads its articles in the reduce pass. */
   scene?: unknown
+  /** Enabled MCP services of the user, as the settings keep them (`LocalAIMcpService`). */
+  mcpServices?: unknown
 }
 
 /**
@@ -119,7 +122,7 @@ export const createChatStreamResponse = async (params: {
       `${stats.reduceTexts} for reduce)/${stats.matched} matched/window=${stats.window || "none"}/${
         stats.feeds
       } feed(s)/${stats.contextChars} chars${stats.selection ? ` [${stats.selection}]` : ""} ` +
-      `tools=${toolsAllowed && handlers ? "on" : "off"}${scene ? ` scene=${scene}` : ""}`,
+      `tools=${toolsAllowed ? "requested" : "off"}${scene ? ` scene=${scene}` : ""}`,
   )
 
   let model
@@ -131,10 +134,34 @@ export const createChatStreamResponse = async (params: {
     })
   }
 
+  // The user's MCP services are opened per chat, after the model is known to work: a request that
+  // cannot run must not leave connections behind.
+  const mcp = toolsAllowed
+    ? await createLocalAIMcpTools(body.mcpServices, {
+        fetch: netFetch,
+        signal: abortSignal,
+        log: (line) => console.log(line),
+      })
+    : null
+  const tools = {
+    ...(toolsAllowed && handlers ? createLocalAITools(handlers) : {}),
+    ...(mcp?.tools ?? {}),
+  }
+  const hasTools = Object.keys(tools).length > 0
+  const closeTools = () => {
+    void mcp?.close()
+  }
+  // An aborted chat still has to release its MCP sessions; `onEnd` covers the normal path.
+  abortSignal?.addEventListener("abort", closeTools, { once: true })
+
   const stream = createUIMessageStream({
     // Both streams report their model errors the same way: the inner one would otherwise answer
     // with the SDK's generic "An error occurred.".
     onError: streamError,
+    onEnd: () => {
+      abortSignal?.removeEventListener("abort", closeTools)
+      closeTools()
+    },
     execute: async ({ writer }) => {
       let context = body.localAIContext ?? null
       const notes = getNotesCache()
@@ -249,19 +276,14 @@ export const createChatStreamResponse = async (params: {
         streamText({
           model,
           system: buildChatSystemPrompt(DEFAULT_CHAT_SYSTEM_PROMPT, localContext, language, {
-            toolsAvailable: toolsAllowed && handlers !== null,
+            toolsAvailable: hasTools,
           }),
           messages,
           maxOutputTokens: call.maxOutputTokens,
           temperature: call.temperature,
           providerOptions: call.providerOptions,
           abortSignal,
-          ...(toolsAllowed && handlers
-            ? {
-                tools: createLocalAITools(handlers),
-                stopWhen: stepCountIs(LOCAL_AI_MAX_TOOL_STEPS),
-              }
-            : {}),
+          ...(hasTools ? { tools, stopWhen: stepCountIs(LOCAL_AI_MAX_TOOL_STEPS) } : {}),
           // Reasoning models answer only after thinking, and a cap their thinking uses up leaves an
           // empty reply; this line says which of the two happened.
           onFinish: ({ finishReason, usage }) => {

@@ -8,6 +8,7 @@ import { merge } from "es-toolkit/compat"
 import { nanoid } from "nanoid"
 import type { StateCreator } from "zustand"
 
+import { getAISettings } from "~/atoms/settings/ai"
 import { getActionLanguage } from "~/atoms/settings/general"
 import { followClient } from "~/lib/api-client"
 
@@ -23,6 +24,31 @@ import type { ChatSlice } from "./types"
 const FEED_CANDIDATE_LIMIT = 40
 const FEED_CANDIDATE_TTL = 10 * 60 * 1000
 const FEED_CANDIDATE_CACHE_LIMIT = 20
+
+/**
+ * The MCP services a local chat may use.
+ *
+ * Only enabled ones, and only the fields a connection needs: the settings' status fields describe
+ * what Folo's own server saw, which the main process never asked about and cannot keep current.
+ */
+const enabledMcpServices = () => {
+  const settings = getAISettings()
+  if (!settings.mcpEnabled) return []
+
+  return settings.mcpServices.flatMap((service) =>
+    service.enabled && service.url
+      ? [
+          {
+            id: service.id,
+            name: service.name,
+            transportType: service.transportType,
+            url: service.url,
+            ...(service.headers ? { headers: service.headers } : {}),
+          },
+        ]
+      : [],
+  )
+}
 
 /** Fetched per chat: the "recommend feeds" flow keeps asking on later turns. */
 const feedCandidateCache = new Map<string, { at: number; feeds: LocalAIFeedCandidate[] }>()
@@ -330,6 +356,10 @@ export class ChatSliceActions {
             })
           : null
 
+      // A local model has no access to the interface language, so the request carries it; the MCP
+      // services it may use are the renderer's settings too.
+      const mcpServices = isLocalAIEnabled() ? enabledMcpServices() : []
+
       // Use the AI SDK's sendMessage method
       const finalOptions = merge(
         {
@@ -338,6 +368,7 @@ export class ChatSliceActions {
             ...(localAIContext ? { localAIContext } : {}),
             // A local model has no access to the interface language, so the request carries it.
             ...(isLocalAIEnabled() ? { language: getActionLanguage() } : {}),
+            ...(mcpServices.length > 0 ? { mcpServices } : {}),
           },
           headers: createDesktopAPIHeaders({ version: PKG.version }),
         },
@@ -407,12 +438,14 @@ export class ChatSliceActions {
       const localAIContext = userMessage ? await this.createLocalAIContext(userMessage) : null
 
       // Use the AI SDK's regenerate method
+      const mcpServices = isLocalAIEnabled() ? enabledMcpServices() : []
       const finalOptions = merge(
         {
           body: {
             scene: this.get().scene,
             ...(localAIContext ? { localAIContext } : {}),
             ...(isLocalAIEnabled() ? { language: getActionLanguage() } : {}),
+            ...(mcpServices.length > 0 ? { mcpServices } : {}),
           },
         },
         options,

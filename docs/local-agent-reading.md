@@ -48,6 +48,27 @@ A chat spends at most six model round trips on tools, and the timeline-summary s
 (its pre-pass already reads every matched article). An endpoint that rejects tool calling is
 detected on its first refusal, and later chats in the same run go out without tools.
 
+### The user's own MCP services
+
+The same loop also offers tools from the MCP services configured under **Settings → AI → MCP**, so
+one answer can combine the user's notes with what they read. What applies:
+
+- **Read-only, explicitly.** Only a tool whose server marks it `readOnlyHint` is offered. A server
+  that annotates nothing contributes nothing; write tools need an approval flow the app does not
+  have yet.
+- **Per request.** Connections open when a chat starts and close when its answer is finished;
+  nothing is cached between chats, so a service the user just disabled or re-authenticated is read
+  as it is now. A service that cannot be reached is skipped and the answer goes on without it.
+- **Bounded.** Up to 8 services and 26 tools per request (Folo's four come on top), 16 000
+  characters per tool result, 15 seconds per call, and headers come from the service configuration
+  (a personal access token, a bearer key). There is no OAuth flow: a service that only supports
+  OAuth cannot be used from the loop yet.
+- **Names carry the service**: `mcp__<service>__<tool>`, so an answer can be traced back to where a
+  fact came from.
+
+Tool results are remote text and reach the model as-is. The loop cannot do anything with them beyond
+reading, but an answer built from an untrusted service is only as trustworthy as that service.
+
 ## Connect an agent
 
 Any MCP client that speaks Streamable HTTP can connect; only the endpoint and the token are needed:
