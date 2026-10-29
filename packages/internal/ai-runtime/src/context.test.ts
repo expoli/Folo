@@ -32,9 +32,9 @@ describe("messageText", () => {
 })
 
 describe("toModelMessages", () => {
-  test("keeps the role and drops messages that carry no text", () => {
+  test("keeps the role and drops messages that carry no text", async () => {
     expect(
-      toModelMessages([
+      await toModelMessages([
         { role: "user", parts: [{ type: "text", text: "Question" }] },
         { role: "assistant", parts: [{ type: "step-start" }] },
         { role: "tool", parts: [{ type: "text", text: "Tool answer" }] },
@@ -45,9 +45,33 @@ describe("toModelMessages", () => {
     ])
   })
 
-  test("tolerates a body without messages", () => {
-    expect(toModelMessages(undefined)).toEqual([])
-    expect(toModelMessages("nope")).toEqual([])
+  test("tolerates a body without messages", async () => {
+    expect(await toModelMessages(undefined)).toEqual([])
+    expect(await toModelMessages("nope")).toEqual([])
+  })
+
+  test("keeps a tool call and its approval decision as messages", async () => {
+    const messages = await toModelMessages([
+      { id: "m1", role: "user", parts: [{ type: "text", text: "写一条笔记" }] },
+      {
+        id: "m2",
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-mcp__notes__create_note",
+            toolCallId: "call-1",
+            state: "approval-responded",
+            input: { title: "T", body: "B" },
+            approval: { id: "approval-1", approved: true },
+          },
+        ],
+      },
+    ])
+
+    // The call cannot be flattened into prose: the model has to see what it asked for.
+    const serialized = JSON.stringify(messages)
+    expect(serialized).toContain("create_note")
+    expect(serialized).toContain("call-1")
   })
 })
 

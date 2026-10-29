@@ -53,6 +53,11 @@ export interface McpConnection {
 
 export interface LocalAIMcpTools {
   tools: ToolSet
+  /**
+   * Tools that may change something outside Folo. Their call is offered to the model, but it only
+   * runs after the user approves it in the panel; a read-only tool is not listed here.
+   */
+  approvals: Record<string, "user-approval">
   /** Closes every connection this request opened. Safe to call more than once. */
   close: () => Promise<void>
 }
@@ -217,7 +222,7 @@ export const createLocalAIMcpTools = async (
     options.connect ?? ((service: LocalAIMcpService) => connectService(service, options.fetch))
 
   if (services.length === 0) {
-    return { tools: {}, close: async () => {} }
+    return { tools: {}, approvals: {}, close: async () => {} }
   }
 
   const opened = await Promise.all(
@@ -245,20 +250,19 @@ export const createLocalAIMcpTools = async (
 
   const live = opened.filter((entry) => entry !== null)
   const tools: ToolSet = {}
+  const approvals: Record<string, "user-approval"> = {}
   const usedNames = new Set<string>()
   let droppedTools = 0
 
   for (const { service, connection, listed } of live) {
     for (const info of listed) {
-      // The settings offer write tools as well; the loop does not, so the list is filtered rather
-      // than trusted. A server that annotates nothing exposes nothing.
-      if (info.annotations?.readOnlyHint !== true) continue
       if (Object.keys(tools).length >= LOCAL_AI_MCP_LIMITS.maxTools) {
         droppedTools += 1
         continue
       }
 
-      tools[toolNameFor(service, info.name, usedNames)] = tool({
+      const name = toolNameFor(service, info.name, usedNames)
+      tools[name] = tool({
         description: describeTool(service, info.description),
         inputSchema: jsonSchema(
           (info.inputSchema ?? { type: "object", properties: {} }) as Parameters<
@@ -267,6 +271,9 @@ export const createLocalAIMcpTools = async (
         ),
         execute: async (args) => callServiceTool(connection, info.name, args),
       })
+      // The server says what its tool does; the app decides what that costs. A tool that did not
+      // claim read-only is treated as able to change something, so the user is asked first.
+      if (info.annotations?.readOnlyHint !== true) approvals[name] = "user-approval"
     }
   }
 
@@ -276,14 +283,18 @@ export const createLocalAIMcpTools = async (
     )
   }
   if (live.length > 0) {
+    const needingApproval = Object.keys(approvals).length
     log(
-      `[local-ai] mcp: ${Object.keys(tools).length} read-only tool(s) from ${live.length} service(s)`,
+      `[local-ai] mcp: ${Object.keys(tools).length} tool(s) from ${live.length} service(s)${
+        needingApproval > 0 ? `, ${needingApproval} need approval` : ""
+      }`,
     )
   }
 
   let closed = false
   return {
     tools,
+    approvals,
     close: async () => {
       if (closed) return
       closed = true

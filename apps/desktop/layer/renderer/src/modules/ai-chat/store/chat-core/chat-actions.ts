@@ -462,6 +462,33 @@ export class ChatSliceActions {
     this.chatInstance.stop()
   }
 
+  /**
+   * Answers a tool that asked for approval before running.
+   *
+   * The chat continues by itself once the answer is in the message list (`sendAutomaticallyWhen`
+   * on the chat instance), so this only records the decision; the same answer keeps streaming.
+   */
+  addToolApprovalResponse = async ({
+    id,
+    approved,
+    reason,
+  }: {
+    id: string
+    approved: boolean
+    reason?: string
+  }) => {
+    try {
+      await this.chatInstance.addToolApprovalResponse({
+        id,
+        approved,
+        ...(reason ? { reason } : {}),
+      })
+    } catch (error) {
+      this.setError(error as Error)
+      throw error
+    }
+  }
+
   resumeStream = async () => {
     try {
       // Use AI SDK's resumeStream method

@@ -80,6 +80,7 @@ describe("createLocalAIMcpTools", () => {
     const result = await createLocalAIMcpTools(undefined, { connect })
 
     expect(result.tools).toEqual({})
+    expect(result.approvals).toEqual({})
     expect(connect).not.toHaveBeenCalled()
     await result.close()
   })
@@ -98,21 +99,23 @@ describe("createLocalAIMcpTools", () => {
     await result.close()
   })
 
-  test("offers only tools the server marks read-only", async () => {
-    const { connection } = fakeConnection({ tools: [readOnly("search"), writable("create_note")] })
+  test("asks for approval only on the tools that did not claim to be read-only", async () => {
+    const { connection } = fakeConnection({
+      tools: [readOnly("search"), writable("create_note"), { name: "unannotated" }],
+    })
 
     const result = await createLocalAIMcpTools([service()], { connect: async () => connection })
 
-    expect(Object.keys(result.tools)).toEqual(["mcp__test_service__search"])
-    await result.close()
-  })
-
-  test("offers nothing from a server that annotates nothing", async () => {
-    const { connection } = fakeConnection({ tools: [{ name: "unannotated" }] })
-
-    const result = await createLocalAIMcpTools([service()], { connect: async () => connection })
-
-    expect(result.tools).toEqual({})
+    expect(Object.keys(result.tools).sort()).toEqual([
+      "mcp__test_service__create_note",
+      "mcp__test_service__search",
+      "mcp__test_service__unannotated",
+    ])
+    // A server that annotates nothing gets the cautious reading, not the optimistic one.
+    expect(result.approvals).toEqual({
+      mcp__test_service__create_note: "user-approval",
+      mcp__test_service__unannotated: "user-approval",
+    })
     await result.close()
   })
 

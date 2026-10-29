@@ -53,9 +53,10 @@ detected on its first refusal, and later chats in the same run go out without to
 The same loop also offers tools from the MCP services configured under **Settings → AI → MCP**, so
 one answer can combine the user's notes with what they read. What applies:
 
-- **Read-only, explicitly.** Only a tool whose server marks it `readOnlyHint` is offered. A server
-  that annotates nothing contributes nothing; write tools need an approval flow the app does not
-  have yet.
+- **Read-only tools run by themselves; the rest wait for you.** A tool whose server marks it
+  `readOnlyHint` is called directly. Any other tool — a note editor, an issue creator — is offered
+  to the model but stops at a decision: the panel shows **Allow** / **Deny**, and nothing runs until
+  you choose. A server that annotates nothing gets this cautious reading too.
 - **Per request.** Connections open when a chat starts and close when its answer is finished;
   nothing is cached between chats, so a service the user just disabled or re-authenticated is read
   as it is now. A service that cannot be reached is skipped and the answer goes on without it.
@@ -63,11 +64,14 @@ one answer can combine the user's notes with what they read. What applies:
   characters per tool result, 15 seconds per call, and headers come from the service configuration
   (a personal access token, a bearer key). There is no OAuth flow: a service that only supports
   OAuth cannot be used from the loop yet.
+- **Approval is per call, not remembered.** Allowing a tool once does not allow it next time, and
+  the decision cannot be pre-set from the settings; that would be an approval nobody read.
 - **Names carry the service**: `mcp__<service>__<tool>`, so an answer can be traced back to where a
   fact came from.
 
-Tool results are remote text and reach the model as-is. The loop cannot do anything with them beyond
-reading, but an answer built from an untrusted service is only as trustworthy as that service.
+Tool results are remote text and reach the model as-is. A call you allowed can change data on that
+service — the panel shows what it was asked to do before you allow it — but the loop itself still
+cannot touch Folo's own read state.
 
 ## Connect an agent
 

@@ -17,6 +17,7 @@ import {
 } from "@follow/ai-runtime/provider"
 import { noteCacheKey } from "@follow/ai-runtime/reduce"
 import type { LocalAIDirectConfig } from "@follow/shared/settings/local-ai"
+import type { UIMessage } from "ai"
 import { createUIMessageStream, createUIMessageStreamResponse, stepCountIs, streamText } from "ai"
 import { app } from "electron"
 import { join } from "pathe"
@@ -95,7 +96,7 @@ export const createChatStreamResponse = async (params: {
   abortSignal?: AbortSignal
 }): Promise<Response> => {
   const { body, config, apiKey, abortSignal } = params
-  const messages = toModelMessages(body.messages)
+  const messages = await toModelMessages(body.messages)
   if (messages.length === 0) {
     return jsonResponse(400, { error: "No message text found in the request" })
   }
@@ -148,6 +149,10 @@ export const createChatStreamResponse = async (params: {
     ...(mcp?.tools ?? {}),
   }
   const hasTools = Object.keys(tools).length > 0
+  // A tool whose server did not claim it is read-only only runs after the user says so in the
+  // panel. That decision arrives with the next request, so one approval costs one more chat round
+  // trip and starts its own step budget.
+  const toolApproval = mcp && Object.keys(mcp.approvals).length > 0 ? mcp.approvals : undefined
   const closeTools = () => {
     void mcp?.close()
   }
@@ -155,6 +160,9 @@ export const createChatStreamResponse = async (params: {
   abortSignal?.addEventListener("abort", closeTools, { once: true })
 
   const stream = createUIMessageStream({
+    // The history the client sent is the message the answer belongs to: an approved tool result is
+    // only attachable if the assembler can see the tool call it answers.
+    ...(Array.isArray(body.messages) ? { originalMessages: body.messages as UIMessage[] } : {}),
     // Both streams report their model errors the same way: the inner one would otherwise answer
     // with the SDK's generic "An error occurred.".
     onError: streamError,
@@ -283,7 +291,13 @@ export const createChatStreamResponse = async (params: {
           temperature: call.temperature,
           providerOptions: call.providerOptions,
           abortSignal,
-          ...(hasTools ? { tools, stopWhen: stepCountIs(LOCAL_AI_MAX_TOOL_STEPS) } : {}),
+          ...(hasTools
+            ? {
+                tools,
+                stopWhen: stepCountIs(LOCAL_AI_MAX_TOOL_STEPS),
+                ...(toolApproval ? { toolApproval } : {}),
+              }
+            : {}),
           // Reasoning models answer only after thinking, and a cap their thinking uses up leaves an
           // empty reply; this line says which of the two happened.
           onFinish: ({ finishReason, usage }) => {

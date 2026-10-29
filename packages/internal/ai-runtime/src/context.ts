@@ -2,6 +2,8 @@
  * Request-shaping helpers of the app's own AI provider, shared by the direct mode and the gateway
  * so both produce the same prompts.
  */
+import { convertToModelMessages } from "ai"
+
 import { languageName, NO_CONTEXT_NOTE, TOOLS_NOTE } from "./prompts"
 
 interface ChatPart {
@@ -44,8 +46,88 @@ export const messageText = (message: ChatMessage | null | undefined): string => 
     .trim()
 }
 
-export const toModelMessages = (messages: unknown): ModelMessage[] => {
+/**
+ * Whether a message carries a tool call, its result or an approval decision.
+ *
+ * Those parts cannot be flattened into text: the model has to see the call it made and the answer
+ * it got, and an approval decision only means something as a tool-approval response.
+ */
+const carriesToolPart = (message: unknown) => {
+  const parts = (message as ChatMessage | null | undefined)?.parts
+  if (!Array.isArray(parts)) return false
+
+  return parts.some((part) => {
+    const type = (part as ChatPart | null | undefined)?.type
+    return typeof type === "string" && type.startsWith("tool-")
+  })
+}
+
+/** Folo's own parts, rewritten as the standard ones the AI SDK understands. */
+const standardParts = (message: unknown) => {
+  const parts = (message as ChatMessage | null | undefined)?.parts
+  if (!Array.isArray(parts)) return []
+
+  const standard: Record<string, unknown>[] = []
+  for (const part of parts as ChatPart[]) {
+    if (!part || typeof part !== "object" || typeof part.type !== "string") continue
+
+    // Text, tool calls and files are the model's business; Folo's rich-text blocks carry the text
+    // of a quoted entry, and the rest of the labels are for the panel, not the prompt.
+    if (part.type === "text" || part.type.startsWith("tool-")) {
+      standard.push(part as Record<string, unknown>)
+      continue
+    }
+    if (part.type === "file") {
+      standard.push(part as Record<string, unknown>)
+      continue
+    }
+    if (part.type.startsWith("data-")) {
+      const { data } = part
+      if (
+        data &&
+        typeof data === "object" &&
+        typeof (data as { text?: unknown }).text === "string"
+      ) {
+        standard.push({ type: "text", text: (data as { text: string }).text })
+      }
+    }
+  }
+
+  return standard
+}
+
+/**
+ * The messages a model call starts from.
+ *
+ * Asynchronous because the SDK's own conversion fetches file parts; a request without tools still
+ * resolves immediately on the tolerant text path.
+ */
+export const toModelMessages = async (messages: unknown): Promise<ModelMessage[]> => {
   if (!Array.isArray(messages)) return []
+
+  // A conversation that ran tools needs the SDK's own conversion: the call, its result and the
+  // user's approval are messages, not prose. Everything else keeps the tolerant text path below.
+  if (messages.some(carriesToolPart)) {
+    const converted = await convertToModelMessages(
+      messages.map((message) => {
+        const candidate = (message ?? {}) as ChatMessage & { id?: string }
+        const role: ModelMessage["role"] =
+          candidate.role === "assistant"
+            ? "assistant"
+            : candidate.role === "system"
+              ? "system"
+              : "user"
+
+        return {
+          id: typeof candidate.id === "string" ? candidate.id : "",
+          role,
+          parts: standardParts(message),
+        } as never
+      }),
+    )
+
+    return converted as ModelMessage[]
+  }
 
   return messages
     .map((message) => {

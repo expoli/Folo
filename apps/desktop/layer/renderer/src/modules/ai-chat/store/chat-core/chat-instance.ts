@@ -1,5 +1,5 @@
 import type { ChatInit, ChatStatus, ChatTransport } from "ai"
-import { AbstractChat } from "ai"
+import { AbstractChat, lastAssistantMessageIsCompleteWithApprovalResponses } from "ai"
 
 import type { BizUIMessage } from "../types"
 import { ZustandChatState } from "./chat-state"
@@ -15,7 +15,14 @@ export class ZustandChat extends AbstractChat<BizUIMessage> {
     updateZustandState: (updater: (state: ChatSlice) => ChatSlice) => void,
   ) {
     const state = new ZustandChatState(messages, updateZustandState, init.id || "")
-    super({ ...init, state })
+    super({
+      ...init,
+      // A tool that needs the user's approval pauses the run; the answer continues by itself once
+      // the decision is in the message list, so the panel does not need a second send.
+      sendAutomaticallyWhen:
+        init.sendAutomaticallyWhen ?? lastAssistantMessageIsCompleteWithApprovalResponses,
+      state,
+    })
     this.state = state
 
     const baseResumeStream = this.resumeStream.bind(this)

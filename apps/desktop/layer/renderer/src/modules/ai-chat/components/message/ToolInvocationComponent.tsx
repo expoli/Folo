@@ -1,3 +1,4 @@
+import { Button } from "@follow/components/ui/button/index.js"
 import { CollapseCss, CollapseCssGroup } from "@follow/components/ui/collapse/index.js"
 import { JsonHighlighter } from "@follow/components/ui/json-highlighter/index.js"
 import type { ToolUIPart } from "ai"
@@ -7,16 +8,42 @@ import * as React from "react"
 import { useTranslation } from "react-i18next"
 import { titleCase } from "title-case"
 
+import { useChatActions } from "../../store/hooks"
+
 interface ToolInvocationComponentProps {
   part: ToolUIPart
 
   variant: "loose" | "tight"
 }
 
+/**
+ * The approval fields of a tool part.
+ *
+ * `BizUITools` comes from the service package and describes the tools the server runs, so its
+ * states do not include the approval ones; the part is read through this narrow view instead of
+ * widening a type this app does not own.
+ */
+interface ToolApprovalView {
+  state: string
+  approval?: {
+    id: string
+    approved?: boolean
+    requestReason?: string
+    reason?: string
+  }
+}
+
 export const ToolInvocationComponent: React.FC<ToolInvocationComponentProps> = React.memo(
   ({ part, variant }) => {
     const { t } = useTranslation("ai")
+    const chatActions = useChatActions()
     const toolName = titleCase(getStaticToolName(part).replaceAll("_", " "))
+
+    const approvalView = part as unknown as ToolApprovalView
+    const approval = approvalView.approval
+    const needsApproval = approvalView.state === "approval-requested" && !!approval
+    const wasDecided =
+      approvalView.state === "approval-responded" && typeof approval?.approved === "boolean"
 
     const hasError = "errorText" in part && part.errorText
     const hasResult = "output" in part && part.output
@@ -58,9 +85,11 @@ export const ToolInvocationComponent: React.FC<ToolInvocationComponentProps> = R
                   <span>
                     {hasError
                       ? t("chat.tool.failed")
-                      : isCalling
-                        ? t("chat.tool.calling")
-                        : t("chat.tool.called")}
+                      : needsApproval
+                        ? t("chat.tool.approval.required")
+                        : isCalling
+                          ? t("chat.tool.calling")
+                          : t("chat.tool.called")}
                   </span>
                   <span className={`truncate font-medium ${hasError ? "text-red" : "text-text"}`}>
                     {toolName}
@@ -112,6 +141,35 @@ export const ToolInvocationComponent: React.FC<ToolInvocationComponentProps> = R
             </div>
           </CollapseCss>
         </CollapseCssGroup>
+
+        {needsApproval && approval ? (
+          <div className="mt-1 flex items-center gap-2 pl-0">
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() =>
+                void chatActions.addToolApprovalResponse({ id: approval.id, approved: true })
+              }
+            >
+              {t("chat.tool.approval.allow")}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                void chatActions.addToolApprovalResponse({ id: approval.id, approved: false })
+              }
+            >
+              {t("chat.tool.approval.deny")}
+            </Button>
+          </div>
+        ) : null}
+
+        {wasDecided && approval ? (
+          <div className="mt-1 text-xs text-text-secondary">
+            {approval.approved ? t("chat.tool.approval.allowed") : t("chat.tool.approval.denied")}
+          </div>
+        ) : null}
       </div>
     )
   },

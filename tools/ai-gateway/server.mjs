@@ -389,7 +389,7 @@ const streamError = (error) => {
 }
 
 const handleChat = async (req, res, body) => {
-  const messages = toModelMessages(body.messages)
+  const messages = await toModelMessages(body.messages)
   if (messages.length === 0) {
     sendJson(res, 400, { error: "No message text found in the request" })
     return

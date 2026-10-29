@@ -1,92 +1,14 @@
 /**
  * The real transport path: a Streamable HTTP MCP server on loopback, reached through the same
- * client, headers and tool filtering the app uses. The unit tests substitute the connection; this
- * one proves the substitution is faithful — the read-only filter, the naming and a call all work
- * against a server that speaks the protocol.
+ * client, headers and approval rules the app uses. The unit tests substitute the connection; this
+ * one proves the substitution is faithful against a server that speaks the protocol.
  */
-import { createServer } from "node:http"
-import type { AddressInfo } from "node:net"
-
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
 import type { ToolSet } from "ai"
 import { afterEach, describe, expect, test } from "vitest"
-import { z } from "zod"
 
 import { createLocalAIMcpTools } from "./mcp"
-
-interface TestServer {
-  url: string
-  /** Headers the server saw on the tool call, so the request headers can be asserted. */
-  seenAuthorization: () => string | null
-  close: () => Promise<void>
-}
-
-const startServer = async (): Promise<TestServer> => {
-  let authorization: string | null = null
-
-  const http = createServer((req, res) => {
-    void (async () => {
-      const chunks: Buffer[] = []
-      for await (const chunk of req) chunks.push(Buffer.from(chunk as Buffer))
-      const raw = Buffer.concat(chunks).toString("utf8")
-      const body = raw ? JSON.parse(raw) : undefined
-      if (typeof req.headers.authorization === "string") {
-        authorization = req.headers.authorization
-      }
-
-      const server = new McpServer({ name: "test-mcp", version: "1.0" })
-      server.registerTool(
-        "search_notes",
-        {
-          title: "Search notes",
-          description: "Looks up notes by query",
-          inputSchema: { query: z.string() },
-          annotations: { readOnlyHint: true },
-        },
-        async (args) => ({
-          content: [{ type: "text" as const, text: `notes about ${args.query}` }],
-        }),
-      )
-      server.registerTool(
-        "create_note",
-        {
-          title: "Create note",
-          description: "Writes a note",
-          inputSchema: { text: z.string() },
-          annotations: { readOnlyHint: false },
-        },
-        async () => ({ content: [{ type: "text" as const, text: "created" }] }),
-      )
-
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: undefined,
-        enableJsonResponse: true,
-      })
-      res.on("close", () => {
-        void transport.close().catch(() => {})
-        void server.close().catch(() => {})
-      })
-
-      await server.connect(transport)
-      await transport.handleRequest(req, res, body)
-    })().catch(() => {
-      if (!res.headersSent) res.writeHead(500).end()
-    })
-  })
-
-  await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve))
-  const { port } = http.address() as AddressInfo
-
-  return {
-    url: `http://127.0.0.1:${port}/mcp`,
-    seenAuthorization: () => authorization,
-    close: () =>
-      new Promise<void>((resolve) => {
-        http.close(() => resolve())
-      }),
-  }
-}
+import type { TestMcpServer } from "./test-mcp-server"
+import { startTestMcpServer } from "./test-mcp-server"
 
 const run = async (tools: ToolSet, name: string, input: unknown): Promise<unknown> => {
   const entry = tools[name] as unknown as {
@@ -96,15 +18,15 @@ const run = async (tools: ToolSet, name: string, input: unknown): Promise<unknow
   return await entry.execute(input, { toolCallId: "call-1", messages: [] })
 }
 
-const servers: TestServer[] = []
+const servers: TestMcpServer[] = []
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()))
 })
 
 describe("a real MCP service", () => {
-  test("exposes its read-only tools under the service prefix and answers a call", async () => {
-    const server = await startServer()
+  test("offers its tools, asks approval for the one that can write, and answers a call", async () => {
+    const server = await startTestMcpServer()
     servers.push(server)
 
     const mcp = await createLocalAIMcpTools(
@@ -121,13 +43,19 @@ describe("a real MCP service", () => {
     )
 
     try {
-      expect(Object.keys(mcp.tools)).toEqual(["mcp__notes__search_notes"])
+      // Both tools are offered; only the one that did not claim read-only needs a decision.
+      expect(Object.keys(mcp.tools).sort()).toEqual([
+        "mcp__notes__create_note",
+        "mcp__notes__search_notes",
+      ])
+      expect(Object.keys(mcp.approvals)).toEqual(["mcp__notes__create_note"])
 
       await expect(run(mcp.tools, "mcp__notes__search_notes", { query: "unread" })).resolves.toBe(
         "notes about unread",
       )
       // The headers the renderer sent are the ones the service authenticated with.
-      expect(server.seenAuthorization()).toBe("Bearer test-token")
+      expect(server.authorization()).toBe("Bearer test-token")
+      expect(server.calls).toEqual([{ name: "search_notes", args: { query: "unread" } }])
     } finally {
       await mcp.close()
     }
