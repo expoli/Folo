@@ -34,6 +34,7 @@ import {
   LOCAL_AGENT_READING_LIMITS,
   LOCAL_AGENT_READING_PORT,
   LOCAL_AGENT_READING_SERVICE_NAME,
+  LOCAL_AGENT_READING_TOOL_INFO,
   localAgentReadingBeginScanArgsSchema,
   localAgentReadingContentsArgsSchema,
   localAgentReadingEndpointUrl,
@@ -145,11 +146,7 @@ export const registerLocalAgentReadingTools = (
   server.registerTool(
     "folo_get_status",
     {
-      title: "Folo reading status",
-      description:
-        "Readiness of the Folo reading endpoint: whether the app is signed in and ready, which " +
-        "sources a scan can cover, the limits of a scan, and what is explicitly unsupported. " +
-        "Call this first; it returns no article data.",
+      ...LOCAL_AGENT_READING_TOOL_INFO.folo_get_status,
       annotations,
     },
     async () => {
@@ -172,12 +169,7 @@ export const registerLocalAgentReadingTools = (
   server.registerTool(
     "folo_begin_unread_scan",
     {
-      title: "Begin an unread scan",
-      description:
-        "Enumerates the unread entries of the signed-in account once and pins them as a fixed " +
-        "candidate list. Returns the scan id, how complete the enumeration is and which sources " +
-        "were covered or skipped. Omit `scope` to cover every subscribed view and inbox. " +
-        "Enumeration is read-only: it never marks anything read.",
+      ...LOCAL_AGENT_READING_TOOL_INFO.folo_begin_unread_scan,
       inputSchema: {
         scope: localAgentReadingBeginScanArgsSchema.shape.scope,
       },
@@ -189,11 +181,7 @@ export const registerLocalAgentReadingTools = (
   server.registerTool(
     "folo_list_scan_entries",
     {
-      title: "List scan entries",
-      description:
-        "Pages through the fixed candidate list of a scan. Each entry carries its observed read " +
-        "state and when that state was observed, but no content; follow the returned `cursor` " +
-        "until `hasMore` is false.",
+      ...LOCAL_AGENT_READING_TOOL_INFO.folo_list_scan_entries,
       inputSchema: {
         scanId: localAgentReadingListArgsSchema.shape.scanId,
         cursor: localAgentReadingListArgsSchema.shape.cursor,
@@ -207,12 +195,7 @@ export const registerLocalAgentReadingTools = (
   server.registerTool(
     "folo_get_entry_contents",
     {
-      title: "Read entry contents",
-      description:
-        "Returns the text of up to ten candidates of a scan. `mode` says how far to go: `cached` " +
-        "reads only stored text, `detail` may call the entry detail API, `source_page` also " +
-        "fetches the article page through a public-only guard. Each item names its content " +
-        "source, its completeness and a `nextCursor` that continues a long text.",
+      ...LOCAL_AGENT_READING_TOOL_INFO.folo_get_entry_contents,
       inputSchema: {
         scanId: localAgentReadingContentsArgsSchema.shape.scanId,
         entryIds: localAgentReadingContentsArgsSchema.shape.entryIds,

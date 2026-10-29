@@ -131,6 +131,23 @@ describe("service lifecycle", () => {
     await app.service.stop()
   })
 
+  test("serves a scan to the app's own tools while the endpoint stays closed", async () => {
+    // The chat panel reads the same data without the user exposing a port; only the endpoint gate
+    // may be waived, so the two callers are checked against the same service instance.
+    const app = await started({ enabled: false })
+    expect(app.status()).toMatchObject({ listening: false })
+
+    const viaApp = await app.service.beginScan({}, { requireListening: false })
+    expect(viaApp.ok).toBe(true)
+
+    const viaEndpoint = await app.service.beginScan({})
+    expect(viaEndpoint.ok).toBe(false)
+    if (viaEndpoint.ok) return
+    expect(viaEndpoint.error.code).toBe("SERVICE_DISABLED")
+
+    await app.service.stop()
+  })
+
   test("does not listen when the switch is on but no token could be stored", async () => {
     // A session-only token is gone after a restart; serving an endpoint nobody can authenticate to
     // would be a silent failure, so the status says the token is missing instead.

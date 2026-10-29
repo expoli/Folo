@@ -538,6 +538,48 @@ export const LOCAL_AGENT_READING_TOOL_NAMES = [
 
 export type LocalAgentReadingToolName = (typeof LOCAL_AGENT_READING_TOOL_NAMES)[number]
 
+/**
+ * How each tool describes itself to a model.
+ *
+ * The loopback endpoint and the app's own chat tools read the same strings, so a model that reaches
+ * the service either way is told the same thing about it, down to which call comes first.
+ */
+export const LOCAL_AGENT_READING_TOOL_INFO: Record<
+  LocalAgentReadingToolName,
+  { title: string; description: string }
+> = {
+  folo_get_status: {
+    title: "Folo reading status",
+    description:
+      "Readiness of the Folo reading endpoint: whether the app is signed in and ready, which " +
+      "sources a scan can cover, the limits of a scan, and what is explicitly unsupported. " +
+      "Call this first; it returns no article data.",
+  },
+  folo_begin_unread_scan: {
+    title: "Begin an unread scan",
+    description:
+      "Enumerates the unread entries of the signed-in account once and pins them as a fixed " +
+      "candidate list. Returns the scan id, how complete the enumeration is and which sources " +
+      "were covered or skipped. Omit `scope` to cover every subscribed view and inbox. " +
+      "Enumeration is read-only: it never marks anything read.",
+  },
+  folo_list_scan_entries: {
+    title: "List scan entries",
+    description:
+      "Pages through the fixed candidate list of a scan. Each entry carries its observed read " +
+      "state and when that state was observed, but no content; follow the returned `cursor` " +
+      "until `hasMore` is false.",
+  },
+  folo_get_entry_contents: {
+    title: "Read entry contents",
+    description:
+      "Returns the text of up to ten candidates of a scan. `mode` says how far to go: `cached` " +
+      "reads only stored text, `detail` may call the entry detail API, `source_page` also " +
+      "fetches the article page through a public-only guard. Each item names its content " +
+      "source, its completeness and a `nextCursor` that continues a long text.",
+  },
+}
+
 /** URL an agent is configured with. */
 export const localAgentReadingEndpointUrl = (port = LOCAL_AGENT_READING_PORT) =>
   `http://${LOCAL_AGENT_READING_HOST}:${port}${LOCAL_AGENT_READING_ENDPOINT_PATH}`

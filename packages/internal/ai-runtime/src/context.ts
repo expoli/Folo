@@ -2,7 +2,7 @@
  * Request-shaping helpers of the app's own AI provider, shared by the direct mode and the gateway
  * so both produce the same prompts.
  */
-import { languageName, NO_CONTEXT_NOTE } from "./prompts"
+import { languageName, NO_CONTEXT_NOTE, TOOLS_NOTE } from "./prompts"
 
 interface ChatPart {
   type?: unknown
@@ -252,15 +252,18 @@ export const buildChatSystemPrompt = (
   systemPrompt: string,
   localContext: string,
   language?: string | null,
-) =>
-  [
-    systemPrompt,
-    language ? `Reply in ${languageName(language)}.` : "",
-    localContext,
-    localContext === "" ? NO_CONTEXT_NOTE : "",
-  ]
+  options: { toolsAvailable?: boolean } = {},
+) => {
+  // With tools the "you cannot see the user's data" note is wrong and would talk the model out of
+  // calling them, so the tool note takes its place whether or not context was attached.
+  let note = ""
+  if (options.toolsAvailable) note = TOOLS_NOTE
+  else if (localContext === "") note = NO_CONTEXT_NOTE
+
+  return [systemPrompt, language ? `Reply in ${languageName(language)}.` : "", localContext, note]
     .filter(Boolean)
     .join("\n\n")
+}
 
 /** Counts what arrived with a chat request, for the log line the gateway also prints. */
 export const describeChatContext = (context: LocalAIContext | null | undefined) => {

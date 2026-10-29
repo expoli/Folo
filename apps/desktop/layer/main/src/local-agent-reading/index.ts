@@ -12,6 +12,7 @@ import { logger } from "~/logger"
 import { WindowManager } from "~/manager/window"
 
 import { store } from "../lib/store"
+import { setReadingToolHandlers } from "../local-ai/tools"
 import { resolveSessionAccount } from "./account"
 import { createRendererDataProvider } from "./provider"
 import { LocalAgentReadingService } from "./service"
@@ -39,6 +40,20 @@ export const localAgentReadingService = new LocalAgentReadingService({
     store.set(SOURCE_PAGE_SETTINGS_KEY, enabled)
   },
   log: (line) => logger.info(line),
+})
+
+/**
+ * The same four operations, bound for the app's own chat tools.
+ *
+ * Only the "is the endpoint listening" gate is waived: the panel reads this data without the user
+ * having to expose a port, and every other check (signed in, account unchanged, renderer ready) is
+ * the one the endpoint already applies.
+ */
+setReadingToolHandlers({
+  status: () => localAgentReadingService.status(),
+  beginScan: (args) => localAgentReadingService.beginScan(args, { requireListening: false }),
+  listEntries: (args) => localAgentReadingService.listEntries(args),
+  getContents: (args) => localAgentReadingService.getContents(args),
 })
 
 /**

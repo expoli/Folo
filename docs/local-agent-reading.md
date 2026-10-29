@@ -34,6 +34,20 @@ stored, and the reason the port could not be bound. The port is fixed on purpose
 configured with a URL that must not move. If something else already holds `41610`, the feature
 reports the listen error and stays off instead of picking another port.
 
+## The same four tools inside the app
+
+The chat panel's local AI calls these tools itself, so it can read unread entries instead of only
+working with what the client attached to the message. Two differences from the endpoint:
+
+- The endpoint switch and the token are not involved. The panel talks to the service in-process, so
+  it reads the account without the user exposing a port; **Article page fetching** still gates the
+  `source_page` mode exactly as it does for an agent.
+- Reading stays read-only. There is no tool that marks anything read, for either caller.
+
+A chat spends at most six model round trips on tools, and the timeline-summary shortcut uses none
+(its pre-pass already reads every matched article). An endpoint that rejects tool calling is
+detected on its first refusal, and later chats in the same run go out without tools.
+
 ## Connect an agent
 
 Any MCP client that speaks Streamable HTTP can connect; only the endpoint and the token are needed:

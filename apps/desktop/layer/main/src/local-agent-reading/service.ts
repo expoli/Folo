@@ -331,12 +331,20 @@ export class LocalAgentReadingService {
     }
   }
 
+  /**
+   * Starts a scan of the unread entries of the signed-in account.
+   *
+   * `requireListening` is what tells the two callers apart: the loopback endpoint can only answer
+   * while it listens, while the app's own chat tools read the same data without the user having to
+   * expose a port on the machine.
+   */
   async beginScan(
     args: LocalAgentReadingBeginScanArgs,
+    options: { requireListening?: boolean } = {},
   ): Promise<ToolAnswer<LocalAgentReadingScanSummary>> {
     const account = await this.verifiedAccount()
     if (!account.ok) return toolError(account.code, account.message)
-    if (!this.server.isListening()) {
+    if (options.requireListening !== false && !this.server.isListening()) {
       return toolError("SERVICE_DISABLED", "The reading endpoint is not listening")
     }
 

@@ -42,6 +42,21 @@ export const NO_CONTEXT_NOTE = [
   "timeline summary), then answer from what they paste instead of inventing entries.",
 ].join(" ")
 
+/**
+ * What a chat that owns reading tools is told instead of `NO_CONTEXT_NOTE`.
+ *
+ * The order is the one the endpoint documents (status → scan → list → contents): a model that skips
+ * the scan has nothing to list, and one that pages without a scan id is answered with an error.
+ */
+export const TOOLS_NOTE = [
+  "You can read the user's Folo account yourself with the provided tools: call folo_get_status",
+  "first, then folo_begin_unread_scan (pass `scope.feedIds` to stay inside one feed), page the",
+  "candidates with folo_list_scan_entries, and read their text with folo_get_entry_contents.",
+  "Everything is read-only: reading never marks an entry as read. Anything the tools did not return",
+  "is unknown to you — say so instead of guessing, and attribute what you report to the entries you",
+  "actually read.",
+].join(" ")
+
 const LANGUAGE_NAMES: Record<string, string> = {
   en: "English",
   ja: "Japanese",

@@ -17,7 +17,7 @@ import {
 } from "@follow/ai-runtime/provider"
 import { noteCacheKey } from "@follow/ai-runtime/reduce"
 import type { LocalAIDirectConfig } from "@follow/shared/settings/local-ai"
-import { createUIMessageStream, createUIMessageStreamResponse, streamText } from "ai"
+import { createUIMessageStream, createUIMessageStreamResponse, stepCountIs, streamText } from "ai"
 import { app } from "electron"
 import { join } from "pathe"
 
@@ -31,6 +31,15 @@ import {
 import { netFetch } from "./http"
 import type { NotesCache } from "./notes-cache"
 import { createNotesCache } from "./notes-cache"
+import {
+  createLocalAITools,
+  getReadingToolHandlers,
+  isToolRejectionError,
+  isToolSupportRejected,
+  LOCAL_AI_MAX_TOOL_STEPS,
+  localAIToolSupportKey,
+  markToolSupportRejected,
+} from "./tools"
 
 const NOTES_CACHE_FILE = "local-ai-notes.json"
 
@@ -64,6 +73,8 @@ interface ChatRequestBody {
   localAIContext?: LocalAIContext
   /** Interface language of the app, so the answer matches it instead of the prompt's language. */
   language?: unknown
+  /** Which shortcut sent this; a timeline summary already reads its articles in the reduce pass. */
+  scene?: unknown
 }
 
 /**
@@ -89,17 +100,26 @@ export const createChatStreamResponse = async (params: {
   const stats = describeChatContext(body.localAIContext)
   const requestedModel = typeof body.model === "string" ? body.model : null
   const language = typeof body.language === "string" ? body.language : null
+  const scene = typeof body.scene === "string" ? body.scene : null
   const call = directCallOptions(config)
   // The model that actually runs, not the one the client asked for: a requested model outside the
   // configured list silently falls back, and its notes must not be reused as the other's.
   const modelId = resolveModelId(config, requestedModel) || requestedModel || config.model
+
+  // A summary already reads every matched article in the reduce pre-pass; giving it tools as well
+  // would let one shortcut spend an unbounded number of requests. `null` handlers mean this process
+  // never bound the reading service (tests, a build without it): the chat then simply has no tools.
+  const toolKey = localAIToolSupportKey({ baseUrl: config.baseUrl, model: modelId })
+  const handlers = getReadingToolHandlers()
+  const toolsAllowed = scene !== "timeline-summary" && !isToolSupportRejected(toolKey)
 
   console.log(
     `[local-ai] chat: model=${requestedModel ?? config.model} messages=${messages.length} ` +
       `context=${stats.blocks} block(s)/${stats.entries} entrie(s)(${stats.withText} with text + ` +
       `${stats.reduceTexts} for reduce)/${stats.matched} matched/window=${stats.window || "none"}/${
         stats.feeds
-      } feed(s)/${stats.contextChars} chars${stats.selection ? ` [${stats.selection}]` : ""}`,
+      } feed(s)/${stats.contextChars} chars${stats.selection ? ` [${stats.selection}]` : ""} ` +
+      `tools=${toolsAllowed && handlers ? "on" : "off"}${scene ? ` scene=${scene}` : ""}`,
   )
 
   let model
@@ -228,12 +248,20 @@ export const createChatStreamResponse = async (params: {
       writer.merge(
         streamText({
           model,
-          system: buildChatSystemPrompt(DEFAULT_CHAT_SYSTEM_PROMPT, localContext, language),
+          system: buildChatSystemPrompt(DEFAULT_CHAT_SYSTEM_PROMPT, localContext, language, {
+            toolsAvailable: toolsAllowed && handlers !== null,
+          }),
           messages,
           maxOutputTokens: call.maxOutputTokens,
           temperature: call.temperature,
           providerOptions: call.providerOptions,
           abortSignal,
+          ...(toolsAllowed && handlers
+            ? {
+                tools: createLocalAITools(handlers),
+                stopWhen: stepCountIs(LOCAL_AI_MAX_TOOL_STEPS),
+              }
+            : {}),
           // Reasoning models answer only after thinking, and a cap their thinking uses up leaves an
           // empty reply; this line says which of the two happened.
           onFinish: ({ finishReason, usage }) => {
@@ -243,7 +271,20 @@ export const createChatStreamResponse = async (params: {
               } reasoning=${usage?.outputTokenDetails?.reasoningTokens ?? "?"}`,
             )
           },
-        }).toUIMessageStream({ sendReasoning: true, onError: streamError }),
+        }).toUIMessageStream({
+          sendReasoning: true,
+          onError: (error) => {
+            // An endpoint without tool support fails before any text arrives; remembering it here
+            // makes the next chat in this run go out without tools instead of failing again.
+            if (toolsAllowed && isToolRejectionError(error)) {
+              markToolSupportRejected(toolKey)
+              console.warn(
+                `[local-ai] chat: ${modelId} rejected tools, continuing without them from now on`,
+              )
+            }
+            return streamError(error)
+          },
+        }),
       )
     },
   })

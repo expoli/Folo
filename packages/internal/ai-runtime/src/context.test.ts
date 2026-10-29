@@ -249,6 +249,16 @@ describe("buildChatSystemPrompt", () => {
     expect(prompt).toContain("Reply in Japanese.")
     expect(prompt).not.toContain("Reply in English.")
   })
+
+  test("tells a chat with tools how to read the account instead of denying it can", () => {
+    const prompt = buildChatSystemPrompt(DEFAULT_CHAT_SYSTEM_PROMPT, "", undefined, {
+      toolsAvailable: true,
+    })
+
+    expect(prompt).toContain("folo_begin_unread_scan")
+    // The old note would explicitly talk the model out of calling them.
+    expect(prompt).not.toContain(NO_CONTEXT_NOTE)
+  })
 })
 
 describe("describeChatContext", () => {
