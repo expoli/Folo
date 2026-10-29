@@ -9,6 +9,7 @@ import { useDisplayBlocks } from "~/modules/ai-chat/hooks/useDisplayBlocks"
 import { useFileUploadWithDefaults } from "~/modules/ai-chat/hooks/useFileUpload"
 import { useAIChatStore } from "~/modules/ai-chat/store/AIChatContext"
 import { SUPPORTED_MIME_ACCEPT } from "~/modules/ai-chat/utils/file-validation"
+import { isUnreadOnlyScope, setUnreadOnlyScope } from "~/modules/ai-chat/utils/unread-only-scope"
 
 import { useBlockActions } from "../../store/hooks"
 import { BlockSliceAction } from "../../store/slices/block.slice"
@@ -28,7 +29,8 @@ export const AIChatContextBar: Component = memo(({ className }) => {
     fileInputRef.current?.click()
   }, [])
 
-  const { addOrUpdateBlock, removeBlock } = useBlockActions()
+  const blockActions = useBlockActions()
+  const { addOrUpdateBlock, removeBlock } = blockActions
 
   const view = useRouteParamsSelector((i) => {
     if (!i.isPendingEntry) return
@@ -69,23 +71,18 @@ export const AIChatContextBar: Component = memo(({ className }) => {
     }
   }, [addOrUpdateBlock, feedId, removeBlock])
 
-  // Add unreadOnly context block only when unreadOnly is enabled
+  // The list's filter seeds the panel once, when it opens. Afterwards the pill below owns the
+  // choice: a later change to the list must not rewrite the scope of a conversation in progress.
   const unreadOnly = useGeneralSettingKey("unreadOnly")
+  const seededUnreadOnlyRef = useRef(false)
   useEffect(() => {
-    if (unreadOnly) {
-      addOrUpdateBlock({
-        id: BlockSliceAction.SPECIAL_TYPES.unreadOnly,
-        type: "unreadOnly",
-        value: "true",
-      })
-    } else {
-      removeBlock(BlockSliceAction.SPECIAL_TYPES.unreadOnly)
-    }
+    if (seededUnreadOnlyRef.current) return
+    seededUnreadOnlyRef.current = true
 
-    return () => {
-      removeBlock(BlockSliceAction.SPECIAL_TYPES.unreadOnly)
-    }
-  }, [addOrUpdateBlock, unreadOnly, removeBlock])
+    setUnreadOnlyScope(blockActions, unreadOnly)
+  }, [blockActions, unreadOnly])
+
+  const unreadScope = isUnreadOnlyScope(blocks)
 
   const displayBlocks = useDisplayBlocks(blocks)
 
@@ -138,6 +135,23 @@ export const AIChatContextBar: Component = memo(({ className }) => {
         onChange={handleFileInputChange}
         className="hidden"
       />
+
+      {/* The panel's own scope switch; the list's filter only seeds it on open. */}
+      <button
+        type="button"
+        onClick={() => setUnreadOnlyScope(blockActions, !unreadScope)}
+        aria-pressed={unreadScope}
+        title={t("chat.context.unread_only")}
+        className={cn(
+          "flex h-7 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs transition-colors",
+          unreadScope
+            ? "border-accent/40 bg-accent/10 text-accent"
+            : "border-border bg-material-medium text-text-secondary hover:bg-fill-secondary hover:text-text",
+        )}
+      >
+        <i className="i-mgc-eye-2-cute-re size-3.5" />
+        {t("chat.context.unread_only")}
+      </button>
 
       {/* Visible Context Blocks */}
       <div className="flex min-w-0 flex-1 items-center gap-2">
