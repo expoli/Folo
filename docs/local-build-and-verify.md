@@ -37,6 +37,13 @@ connection was established`.** `@electron/get` fetches `SHASUMS256.txt` from Git
 - Artifacts land in `apps/desktop/out/make/Folo-<version>-linux-x64.AppImage` and
   `apps/desktop/out/make/deb/x64/Folo-<version>-linux-x64.deb`.
 
+## CI packaging
+
+`build-desktop.yml` retries the Windows/Linux Forge packaging command up to three times
+when it exits with an error, with a ten-minute timeout per attempt. This lets transient
+network failures such as `RequestError: read ECONNRESET` recover without restarting the
+whole job. Timeouts and errors on the final attempt still fail the workflow.
+
 ## Verify
 
 ```bash

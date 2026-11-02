@@ -159,8 +159,14 @@ jobs:
 
       - name: Build - Windows and Linux
         if: runner.os == 'Linux' || (runner.os == 'Windows' && github.event.inputs.store != 'true')
-        working-directory: apps/desktop
-        run: pnpm build:electron-forge ${{ env.PROD == 'false' && '--mode=staging' || '' }}
+        uses: nick-fields/retry@v4
+        with:
+          max_attempts: 3
+          timeout_minutes: 10
+          retry_on: error
+          command: |
+            cd apps/desktop
+            pnpm build:electron-forge ${{ env.PROD == 'false' && '--mode=staging' || '' }}
 
       - name: Build - macOS
         if: runner.os == 'macOS' && github.event.inputs.store != 'true'
