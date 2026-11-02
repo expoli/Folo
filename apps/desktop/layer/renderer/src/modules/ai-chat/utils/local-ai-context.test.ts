@@ -93,7 +93,27 @@ describe("buildLocalAIContext", () => {
 
     expect(context?.entries).toHaveLength(1)
     expect(context?.entries[0]?.content).toBe(content)
-    expect(context?.blocks).toEqual([{ type: "mainEntry", value: "entry-1" }])
+    // The article's own feed travels too, so a scan stays inside it instead of covering the account.
+    expect(context?.blocks).toEqual([
+      { type: "mainEntry", value: "entry-1" },
+      { type: "mainFeed", value: "feed-entry-1" },
+    ])
+  })
+
+  test("names no feed when the articles come from different feeds", () => {
+    setEntries([
+      createEntry("entry-1", { feedId: "feed-1" }),
+      createEntry("entry-2", { feedId: "feed-2" }),
+    ])
+
+    const context = buildLocalAIContext([
+      blockPart([mainEntryBlock("entry-1"), mainEntryBlock("entry-2")]),
+    ])
+
+    expect(context?.blocks).toEqual([
+      { type: "mainEntry", value: "entry-1" },
+      { type: "mainEntry", value: "entry-2" },
+    ])
   })
 
   test("marks the text it has to cut for a single article", () => {
@@ -222,6 +242,60 @@ describe("buildLocalAIContext", () => {
     expect(context?.entries[1]?.body).toBe("y".repeat(500))
   })
 
+  test("sends a body covering a short article's attached prefix", () => {
+    // A single article may use the whole text budget, so the cut comes from that budget.
+    setLocalAIContextBudget({ maxTotalChars: 100 })
+    setEntries([createEntry("main", { content: "z".repeat(500) })])
+
+    const context = buildLocalAIContext([blockPart([allEntriesBlock()])], { reduce: true })
+
+    expect(context?.entries[0]?.content).toBe(`${"z".repeat(100)}\n…[truncated 400 chars]`)
+    expect(context?.entries[0]?.contentTruncated).toBe(true)
+    expect(context?.entries[0]?.body).toBe("z".repeat(500))
+  })
+
+  test.each([1, 2])(
+    "keeps later facts when %i article(s) exceed the reduce body limit",
+    (count) => {
+      setLocalAIContextBudget({ maxCharsPerEntry: 20_000, maxTotalChars: 60_000 })
+      const laterFact = "The launch is scheduled for November."
+      const source = `${"x".repeat(10_000)}${laterFact}${"y".repeat(60_000)}`
+      setEntries([
+        createEntry("main", { content: source }),
+        ...(count > 1 ? [createEntry("other")] : []),
+      ])
+
+      const context = buildLocalAIContext([blockPart([allEntriesBlock()])], { reduce: true })
+      const attachedChars = count === 1 ? 60_000 : 20_000
+
+      expect(context?.entries[0]?.content).toBe(
+        `${source.slice(0, attachedChars)}\n…[truncated ${source.length - attachedChars} chars]`,
+      )
+      expect(context?.entries[0]?.content).toContain(laterFact)
+      expect(context?.entries[0]?.contentTruncated).toBe(true)
+      expect(context?.entries[0]?.body).toBeNull()
+    },
+  )
+
+  test("keeps both reduce limits and the cut text when the body budget runs out", () => {
+    setLocalAIContextBudget({ maxEntries: 40, maxCharsPerEntry: 1000, maxTotalChars: 60_000 })
+    setEntries(
+      Array.from({ length: 35 }, (_, index) =>
+        createEntry(`entry-${index}`, { content: "x".repeat(10_000) }),
+      ),
+    )
+
+    const context = buildLocalAIContext([blockPart([allEntriesBlock()])], { reduce: true })
+    const bodies = context!.entries.map((entry) => entry.body ?? "")
+
+    expect(bodies.every((body) => body.length <= 6000)).toBe(true)
+    expect(bodies.reduce((total, body) => total + body.length, 0)).toBe(200_000)
+    expect(bodies[33]).toHaveLength(2000)
+    expect(context?.entries[34]?.body).toBeNull()
+    expect(context?.entries[34]?.content).toBe(`${"x".repeat(1000)}\n…[truncated 9000 chars]`)
+    expect(context?.entries[34]?.contentTruncated).toBe(true)
+  })
+
   test("treats a prompt that names a period as a summary", () => {
     const now = dayjs("2026-01-02T12:00:00.000Z")
     setLocalAIContextBudget({ maxEntries: 1, maxTotalChars: 100 })
@@ -246,7 +320,10 @@ describe("buildLocalAIContext", () => {
       { now },
     )
 
-    expect(context?.coverage).toEqual({ matched: 2, window: "last 24 hours" })
+    expect(context?.coverage).toMatchObject({ matched: 2, window: "last 24 hours" })
+    // The bounds travel too, so a scan follows the same period as the attached entries.
+    expect(typeof context?.coverage?.publishedAfter).toBe("string")
+    expect(typeof context?.coverage?.publishedBefore).toBe("string")
     expect(context?.entries[1]?.body).toBe("y".repeat(500))
   })
 
@@ -300,11 +377,16 @@ describe("buildLocalAIContext", () => {
     })
   })
 
-  test("returns null without blocks or without resolvable entries", () => {
+  test("returns null without blocks, and keeps the selection of an unresolvable entry", () => {
     setEntries([createEntry("entry-1")])
 
     expect(buildLocalAIContext([questionPart("hello")])).toBeNull()
-    expect(buildLocalAIContext([blockPart([mainEntryBlock("missing-entry")])])).toBeNull()
+
+    // The article itself is not in the store, but the request still says which article is about:
+    // dropping the block would let the gateway's tools read the whole account instead.
+    const context = buildLocalAIContext([blockPart([mainEntryBlock("missing-entry")])])
+    expect(context?.entries).toEqual([])
+    expect(context?.blocks).toEqual([{ type: "mainEntry", value: "missing-entry" }])
   })
 })
 
@@ -426,7 +508,9 @@ describe("implicit timeline context", () => {
       { now },
     )
     expect(empty?.entries).toEqual([])
-    expect(empty?.coverage).toEqual({ matched: 0, window: "last 24 hours" })
+    expect(empty?.coverage).toMatchObject({ matched: 0, window: "last 24 hours" })
+    expect(empty?.coverage?.publishedAfter).toBe("2026-01-01T12:00:00.000Z")
+    expect(empty?.coverage?.publishedBefore).toBe("2026-01-02T12:00:00.000Z")
   })
 })
 
@@ -572,7 +656,7 @@ describe("timeline scope of the context blocks", () => {
 
     // Without the window this answered about the newest entries of the whole view instead.
     expect(context?.entries.map((entry) => entry.id)).toEqual(["recent"])
-    expect(context?.coverage).toEqual({ matched: 1, window: "last 24 hours" })
+    expect(context?.coverage).toMatchObject({ matched: 1, window: "last 24 hours" })
   })
 
   test("keeps an explicitly referenced entry that the window would drop", () => {

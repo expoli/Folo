@@ -155,6 +155,8 @@ interface ContextEntry {
   /** Text the prompt is too small to carry verbatim; the pre-pass summarizes it into `note`. */
   body?: unknown
   note?: unknown
+  /** `content` was cut; a note may replace it only if `body` covers the attached range. */
+  contentTruncated?: unknown
 }
 
 interface ContextFeed {
@@ -182,9 +184,25 @@ interface ContextCoverage {
   matched?: unknown
   /** The period the prompt named ("Today"), when it named one. */
   window?: unknown
+  /** The period's bounds in ISO form, so a reading tool can scope itself to the same days. */
+  publishedAfter?: unknown
+  publishedBefore?: unknown
 }
 
 const asText = (value: unknown) => (typeof value === "string" && value ? value : "")
+
+/** A note must not replace attached text with a summary of a shorter or different prefix. */
+const canReduceEntry = (entry: ContextEntry) => {
+  const body = asText(entry.body)
+  if (!body) return false
+
+  const content = asText(entry.content)
+  if (!content) return true
+  if (entry.contentTruncated !== true) return false
+
+  const attachedText = content.replace(/\n…\[truncated \d+ chars\]$/, "")
+  return body.startsWith(attachedText)
+}
 
 /** Entry texts the prompt cannot carry in full, in prompt order, for the reduce pre-pass. */
 export interface PendingEntryText {
@@ -195,10 +213,12 @@ export interface PendingEntryText {
   body: string
 }
 
+// Only read bodies whose notes can be used: title-only entries, or truncated entries whose body
+// covers the attached range. Other entries keep their existing text without a wasted model call.
 export const pendingEntryTexts = (context: LocalAIContext | null | undefined): PendingEntryText[] =>
   (Array.isArray(context?.entries) ? context.entries : [])
     .map((entry, position) => ({ entry, index: position + 1 }))
-    .filter(({ entry }) => !asText(entry.content) && asText(entry.body))
+    .filter(({ entry }) => canReduceEntry(entry))
     .map(({ entry, index }) => ({
       index,
       title: asText(entry.title) || undefined,
@@ -206,7 +226,7 @@ export const pendingEntryTexts = (context: LocalAIContext | null | undefined): P
       body: asText(entry.body),
     }))
 
-/** Adds the notes of the pre-pass, leaving the entries that arrived with their text untouched. */
+/** Attaches pre-pass notes as summaries, preserving cut text when no usable note is available. */
 export const applyEntryNotes = (
   context: LocalAIContext | null | undefined,
   notes: Map<number, string>,
@@ -219,7 +239,10 @@ export const applyEntryNotes = (
     ...context,
     entries: context.entries.map((entry, position) => {
       const note = notes.get(position + 1)
-      return note && !asText(entry.content) ? { ...entry, note } : entry
+      if (!note || !canReduceEntry(entry)) return entry
+
+      // Keep the note's provenance: formatting and coverage must count it as a summary, not text.
+      return asText(entry.content) ? { ...entry, content: null, note } : { ...entry, note }
     }),
   }
 }
@@ -270,10 +293,20 @@ const formatCoverage = (context: LocalAIContext, entries: ContextEntry[]): strin
 export const formatLocalContext = (context: LocalAIContext | null | undefined): string => {
   const contextEntries = Array.isArray(context?.entries) ? context.entries : []
   const feeds = Array.isArray(context?.feeds) ? context.feeds : []
-  const coverage = formatCoverage(context ?? {}, contextEntries)
-  if (contextEntries.length === 0 && feeds.length === 0 && coverage === "") return ""
-
   const contextBlocks = Array.isArray(context?.blocks) ? context.blocks : []
+  const coverage = formatCoverage(context ?? {}, contextEntries)
+  // The blocks are the only field that says what the user is looking at when the selection
+  // resolved to nothing (no unread here, a period with no entry, a cache that has not caught up);
+  // dropping them would tell the model the request carried no context at all.
+  if (
+    contextEntries.length === 0 &&
+    feeds.length === 0 &&
+    coverage === "" &&
+    contextBlocks.length === 0
+  ) {
+    return ""
+  }
+
   const blocks = contextBlocks
     .map((block) => (block ? `${asText(block.type)}="${asText(block.value)}"` : ""))
     .filter(Boolean)
@@ -291,7 +324,7 @@ export const formatLocalContext = (context: LocalAIContext | null | undefined): 
       const body =
         asText(entry.content) ||
         (asText(entry.note)
-          ? `(summarised from its full text)\n${asText(entry.note)}`
+          ? `(summarised from the supplied text)\n${asText(entry.note)}`
           : "(no text attached)")
 
       return `### [${index + 1}] ${header}\n${body}`
@@ -362,7 +395,7 @@ export const describeChatContext = (context: LocalAIContext | null | undefined) 
       withText += 1
     }
 
-    if (entry && !asText(entry.content) && asText(entry.body)) reduceTexts += 1
+    if (canReduceEntry(entry)) reduceTexts += 1
   }
 
   const matched =

@@ -2,6 +2,7 @@ import type { FeedViewType } from "@follow/constants"
 import { UserRole } from "@follow/constants"
 import { useTypeScriptHappyCallback } from "@follow/hooks"
 import { shouldRenderScrollMarkReadEndSpacer } from "@follow/shared/scroll-mark-read"
+import { isLocalAIEnabled } from "@follow/store/ai-local/config"
 import { usePrefetchEntryTranslation } from "@follow/store/translation/hooks"
 import { useUserRole } from "@follow/store/user/hooks"
 import type { FlashListProps, FlashListRef } from "@shopify/flash-list"
@@ -68,8 +69,12 @@ export const EntryListContentVideo = ({
   const translationMode = useGeneralSettingKey("translationMode")
   const actionLanguage = useActionLanguage()
   const userRole = useUserRole()
+  // A local endpoint unlocks the translation for a free account, like the desktop app.
   const translationPrefetchEnabled =
-    translation && (userRole == null || (userRole !== UserRole.Free && userRole !== UserRole.Trial))
+    translation &&
+    (isLocalAIEnabled() ||
+      userRole == null ||
+      (userRole !== UserRole.Free && userRole !== UserRole.Trial))
   usePrefetchEntryTranslation({
     entryIds: active ? viewableItems.map((item) => item.key) : [],
     language: actionLanguage,

@@ -1,4 +1,5 @@
 import { FeedViewType } from "@follow/constants"
+import { DEFAULT_SUMMARIZE_TIMELINE_SHORTCUT_ID } from "@follow/shared/settings/defaults"
 import {
   configureLocalAI,
   resetLocalAI,
@@ -8,21 +9,29 @@ import { useEntryStore } from "@follow/store/entry/store"
 import type { EntryModel } from "@follow/store/entry/types"
 import { createDesktopAPIHeaders } from "@follow/utils/headers"
 import type { ChatTransport } from "ai"
+import { createUIMessageStream, createUIMessageStreamResponse } from "ai"
 import { afterEach, beforeEach, describe, expect, it, test, vi } from "vitest"
 
+import type { LocalAIContext } from "../../utils/local-ai-context"
 import { createAIChatStore } from "../store"
 import type { BizUIMessage } from "../types"
 import { ChatSliceActions } from "./chat-actions"
 import type { ZustandChat } from "./chat-instance"
 import type { ChatSlice } from "./types"
 
-const { markSessionSyncedMock, ensureSessionMock, replaceAllMessagesMock, getChatSessionMock } =
-  vi.hoisted(() => ({
-    markSessionSyncedMock: vi.fn(),
-    ensureSessionMock: vi.fn(async () => {}),
-    replaceAllMessagesMock: vi.fn(),
-    getChatSessionMock: vi.fn(),
-  }))
+const {
+  markSessionSyncedMock,
+  ensureSessionMock,
+  replaceAllMessagesMock,
+  getChatSessionMock,
+  loadSessionWithMessagesMock,
+} = vi.hoisted(() => ({
+  markSessionSyncedMock: vi.fn(),
+  ensureSessionMock: vi.fn(async () => {}),
+  replaceAllMessagesMock: vi.fn(),
+  getChatSessionMock: vi.fn(),
+  loadSessionWithMessagesMock: vi.fn(),
+}))
 
 const { getFeedsMock } = vi.hoisted(() => ({ getFeedsMock: vi.fn() }))
 
@@ -36,6 +45,7 @@ vi.mock("../../services", () => ({
     ensureSession: ensureSessionMock,
     replaceAllMessages: replaceAllMessagesMock,
     getChatSession: getChatSessionMock,
+    loadSessionWithMessages: loadSessionWithMessagesMock,
   },
 }))
 
@@ -239,6 +249,382 @@ describe("ChatSliceActions.regenerate", () => {
     // The summary asks for the text of the article the prompt could not carry.
     expect(summaryBody.localAIContext?.entries[1]?.body).toBe("Body entry-2")
   })
+
+  test("reads the scene of the request, not the store's", async () => {
+    configureLocalAI({ baseUrl: "http://127.0.0.1:8788" })
+    setLocalAIContextBudget({ maxEntries: 1, maxTotalChars: 40 })
+    useEntryStore.setState({
+      entryIdByView: {
+        [FeedViewType.All]: new Set(["entry-1", "entry-2"]),
+      } as Record<FeedViewType, Set<string>>,
+    })
+    const store = createAIChatStore()
+    // A shortcut asks for a summary per request and leaves the store on "general".
+    store.setState({ chatId: "chat-1", isLocal: true, scene: "general" })
+    const sendMock = vi
+      .spyOn(store.getState().chatInstance, "sendMessage")
+      .mockResolvedValue(undefined)
+
+    const message: BizUIMessage = {
+      ...createMessage("user-1", "user"),
+      parts: [
+        {
+          type: "data-block",
+          data: [{ id: "block-view", type: "mainView", value: "-1" }],
+        },
+        { type: "text", text: "Summarize today" },
+      ] as BizUIMessage["parts"],
+    }
+
+    await store.getState().chatActions.sendMessage(message, {
+      body: { scene: "timeline-summary" },
+    })
+
+    const body = sendMock.mock.calls.at(-1)?.[1]?.body as {
+      localAIContext?: { entries: { body?: unknown }[] }
+    }
+    expect(body.localAIContext?.entries[1]?.body).toBe("Body entry-2")
+  })
+
+  test("carries the context into the request a tool approval continues", async () => {
+    configureLocalAI({ baseUrl: "http://127.0.0.1:8788" })
+    const store = createAIChatStore()
+    store.setState({ chatId: "chat-1", isLocal: true })
+    const approvalMock = vi
+      .spyOn(store.getState().chatInstance, "addToolApprovalResponse")
+      .mockResolvedValue(undefined)
+    store.getState().chatInstance.chatState.messages = [
+      createMessage("user-1", "user", "entry-1"),
+      createMessage("assistant-1", "assistant"),
+    ]
+
+    await store.getState().chatActions.addToolApprovalResponse({
+      id: "approval-1",
+      approved: true,
+    })
+
+    expect(approvalMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "approval-1",
+        approved: true,
+        options: expect.objectContaining({
+          body: expect.objectContaining({
+            localAIContext: expect.objectContaining({
+              entries: [expect.objectContaining({ id: "entry-1" })],
+            }),
+          }),
+        }),
+      }),
+    )
+  })
+
+  test("sends no options for a tool approval without a gateway", async () => {
+    const store = createAIChatStore()
+    store.setState({ chatId: "chat-1", isLocal: true })
+    const approvalMock = vi
+      .spyOn(store.getState().chatInstance, "addToolApprovalResponse")
+      .mockResolvedValue(undefined)
+
+    await store.getState().chatActions.addToolApprovalResponse({
+      id: "approval-1",
+      approved: true,
+    })
+
+    expect(approvalMock).toHaveBeenCalledWith({ id: "approval-1", approved: true })
+  })
+})
+
+describe("ChatSliceActions request scene continuity", () => {
+  const requests: {
+    scene: string
+    localAIContext?: LocalAIContext
+    messages: BizUIMessage[]
+  }[] = []
+  let approvalRequests: number[]
+
+  const streamResponse = (approvalRequested: boolean) =>
+    createUIMessageStreamResponse({
+      stream: createUIMessageStream({
+        execute: ({ writer }) => {
+          writer.write({ type: "start", messageId: "assistant-scene" })
+          writer.write({ type: "start-step" })
+          if (approvalRequested) {
+            writer.write({
+              type: "tool-input-available",
+              toolName: "mcp_write",
+              toolCallId: "tool-scene",
+              input: {},
+              dynamic: true,
+            })
+            writer.write({
+              type: "tool-approval-request",
+              approvalId: "approval-scene",
+              toolCallId: "tool-scene",
+            })
+          } else {
+            writer.write({ type: "text-start", id: "reply-scene" })
+            writer.write({ type: "text-delta", id: "reply-scene", delta: "Done" })
+            writer.write({ type: "text-end", id: "reply-scene" })
+          }
+          writer.write({ type: "finish-step" })
+          writer.write({ type: "finish", finishReason: approvalRequested ? "tool-calls" : "stop" })
+        },
+      }),
+    })
+
+  const timelineMessage = (shortcut = true): BizUIMessage => ({
+    ...createMessage("user-scene", "user"),
+    parts: [
+      {
+        type: "data-block",
+        data: [{ id: "block-view", type: "mainView", value: "-1" }],
+      },
+      shortcut
+        ? {
+            type: "data-rich-text",
+            data: {
+              text: "Summarize today",
+              state: JSON.stringify({
+                root: {
+                  type: "root",
+                  version: 1,
+                  children: [
+                    {
+                      type: "paragraph",
+                      version: 1,
+                      children: [
+                        {
+                          type: "shortcut",
+                          version: 1,
+                          shortcutData: { id: DEFAULT_SUMMARIZE_TIMELINE_SHORTCUT_ID },
+                        },
+                      ],
+                    },
+                  ],
+                },
+              }),
+            },
+          }
+        : { type: "text", text: "Summarize today" },
+    ],
+  })
+
+  const approve = async (getState: () => ChatSlice) => {
+    const nextRequestCount = requests.length + 1
+    await getState().chatActions.addToolApprovalResponse({
+      id: "approval-scene",
+      approved: true,
+    })
+    await vi.waitFor(() => {
+      expect(requests).toHaveLength(nextRequestCount)
+      expect(getState().status).toBe("ready")
+    })
+    expect(requests.at(-1)?.messages.at(-1)?.parts).toContainEqual(
+      expect.objectContaining({
+        state: "approval-responded",
+        approval: { id: "approval-scene", approved: true },
+      }),
+    )
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    resetLocalAI()
+    configureLocalAI({ baseUrl: "http://127.0.0.1:8788" })
+    setLocalAIContextBudget({ maxEntries: 1, maxTotalChars: 40 })
+    useEntryStore.setState({
+      data: { "entry-1": createEntry("entry-1"), "entry-2": createEntry("entry-2") },
+      entryIdByView: {
+        [FeedViewType.All]: new Set(["entry-1", "entry-2"]),
+      } as Record<FeedViewType, Set<string>>,
+    })
+    requests.length = 0
+    approvalRequests = [1]
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: unknown, init?: RequestInit) => {
+        if (!init?.body) return new Response(null, { status: 204 })
+        requests.push(JSON.parse(init.body as string))
+        return streamResponse(approvalRequests.includes(requests.length))
+      }),
+    )
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    resetLocalAI()
+  })
+
+  test.each([
+    {
+      name: "summary shortcut without options",
+      shortcut: true,
+      requestedScene: undefined,
+      storeScene: "general",
+      expectedScene: "timeline-summary",
+    },
+    {
+      name: "explicit general over a summary shortcut",
+      shortcut: true,
+      requestedScene: "general",
+      storeScene: "general",
+      expectedScene: "general",
+    },
+    {
+      name: "explicit onboarding over a summary shortcut",
+      shortcut: true,
+      requestedScene: "onboarding",
+      storeScene: "general",
+      expectedScene: "onboarding",
+    },
+    {
+      name: "explicit summary without a shortcut",
+      shortcut: false,
+      requestedScene: "timeline-summary",
+      storeScene: "general",
+      expectedScene: "timeline-summary",
+    },
+    {
+      name: "ordinary general chat",
+      shortcut: false,
+      requestedScene: undefined,
+      storeScene: "general",
+      expectedScene: "general",
+    },
+    {
+      name: "ordinary onboarding chat",
+      shortcut: false,
+      requestedScene: undefined,
+      storeScene: "onboarding",
+      expectedScene: "onboarding",
+    },
+  ] as const)(
+    "keeps $name consistent on send, approval and regenerate",
+    async ({ shortcut, requestedScene, storeScene, expectedScene }) => {
+      const store = createAIChatStore()
+      store.setState({ scene: storeScene })
+
+      // Keep the real SDK, transport and context builder: the gateway sees the serialized request,
+      // and an actual approval stream must drive the next request without replacing an action.
+      await store
+        .getState()
+        .chatActions.sendMessage(
+          timelineMessage(shortcut),
+          requestedScene ? { body: { scene: requestedScene } } : undefined,
+        )
+      expect(store.getState().messages.at(-1)?.parts).toContainEqual(
+        expect.objectContaining({ state: "approval-requested" }),
+      )
+      await approve(store.getState)
+      await store.getState().chatActions.regenerate({ messageId: "assistant-scene" })
+
+      expect(requests).toHaveLength(3)
+      for (const request of requests) {
+        expect(request.scene).toBe(expectedScene)
+        expect(request.localAIContext?.fetchBodies === true).toBe(
+          expectedScene === "timeline-summary",
+        )
+        expect(request.localAIContext?.entries.find((entry) => entry.id === "entry-2")?.body).toBe(
+          expectedScene === "timeline-summary" ? "Body entry-2" : undefined,
+        )
+      }
+      expect(store.getState().scene).toBe(storeScene)
+    },
+  )
+
+  test("preserves the official chat scene when a timeline shortcut is sent", async () => {
+    resetLocalAI()
+    const store = createAIChatStore()
+
+    await store.getState().chatActions.sendMessage(timelineMessage())
+
+    expect(requests[0]?.scene).toBe("general")
+    expect(requests[0]?.localAIContext).toBeUndefined()
+  })
+
+  test("uses an explicit regenerate scene for its context and later approval", async () => {
+    approvalRequests.push(2)
+    const store = createAIChatStore()
+    await store.getState().chatActions.sendMessage(timelineMessage())
+
+    await store.getState().chatActions.regenerate({
+      messageId: "assistant-scene",
+      body: { scene: "general" },
+    })
+    await approve(store.getState)
+    await store.getState().chatActions.regenerate({ messageId: "assistant-scene" })
+
+    expect(requests.map((request) => request.scene)).toEqual([
+      "timeline-summary",
+      "general",
+      "general",
+      "general",
+    ])
+    expect(requests[0]?.localAIContext?.fetchBodies).toBe(true)
+    for (const request of requests.slice(1)) {
+      expect(request.localAIContext?.fetchBodies).not.toBe(true)
+      expect(
+        request.localAIContext?.entries.find((entry) => entry.id === "entry-2")?.body,
+      ).toBeUndefined()
+    }
+  })
+
+  test("retains an explicit scene for string messages using the SDK's generated id", async () => {
+    const store = createAIChatStore({ generateId: () => "generated-user-scene" })
+    await store.getState().chatActions.sendMessage("Summarize today", {
+      body: { scene: "timeline-summary" },
+    })
+    expect(store.getState().messages[0]?.id).toBe("generated-user-scene")
+    await approve(store.getState)
+    await store.getState().chatActions.regenerate({ messageId: "assistant-scene" })
+    expect(requests.map((request) => request.scene)).toEqual([
+      "timeline-summary",
+      "timeline-summary",
+      "timeline-summary",
+    ])
+  })
+
+  test("discards a scene when sending fails before the SDK stores the user message", async () => {
+    const store = createAIChatStore()
+    const sendMock = vi
+      .spyOn(store.getState().chatInstance, "sendMessage")
+      .mockRejectedValueOnce(new Error("not queued"))
+    await expect(
+      store.getState().chatActions.sendMessage(timelineMessage(), {
+        body: { scene: "general" },
+      }),
+    ).rejects.toThrow("not queued")
+    sendMock.mockRestore()
+
+    store.getState().chatActions.setMessages([timelineMessage()])
+    await store.getState().chatActions.regenerate({ messageId: "user-scene" })
+    expect(requests[0]?.scene).toBe("timeline-summary")
+    expect(requests[0]?.localAIContext?.fetchBodies).toBe(true)
+  })
+
+  test.each(["newChat", "switchToChat"] as const)(
+    "clears live scene overrides on %s",
+    async (action) => {
+      const store = createAIChatStore()
+      const { chatActions } = store.getState()
+      await chatActions.sendMessage(timelineMessage(), { body: { scene: "general" } })
+
+      if (action === "newChat") {
+        await chatActions.newChat()
+        chatActions.setMessages([timelineMessage()])
+      } else {
+        loadSessionWithMessagesMock.mockResolvedValueOnce({
+          session: null,
+          messages: [timelineMessage()],
+        })
+        await chatActions.switchToChat("another-scene-chat")
+      }
+
+      await chatActions.regenerate({ messageId: "user-scene" })
+      expect(requests.map((request) => request.scene)).toEqual(["general", "timeline-summary"])
+      expect(requests[1]?.localAIContext?.fetchBodies).toBe(true)
+    },
+  )
 })
 
 // Folo's "Recommend feeds" shortcut expects the server to supply the catalogue to pick from; a

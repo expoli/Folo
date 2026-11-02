@@ -4,7 +4,6 @@ import { APP_PROTOCOL, DEV, LEGACY_APP_PROTOCOL } from "@follow/shared/constants
 import { env } from "@follow/shared/env.desktop"
 import { app, nativeTheme, Notification, shell } from "electron"
 import contextMenu from "electron-context-menu"
-import path from "pathe"
 
 import { WindowManager } from "~/manager/window"
 
@@ -69,18 +68,12 @@ class AppManagerStatic {
   }
 
   private registerProtocols() {
-    const protocols = [LEGACY_APP_PROTOCOL, APP_PROTOCOL]
+    // Development and isolated test runs receive login callbacks over loopback. They must not
+    // take ownership of the installed app's global URL schemes.
+    if (!app.isPackaged) return
 
-    for (const protocolName of protocols) {
-      if (process.defaultApp) {
-        if (process.argv.length >= 2) {
-          app.setAsDefaultProtocolClient(protocolName, process.execPath, [
-            path.resolve(process.argv[1]!),
-          ])
-        }
-      } else {
-        app.setAsDefaultProtocolClient(protocolName)
-      }
+    for (const protocolName of [LEGACY_APP_PROTOCOL, APP_PROTOCOL]) {
+      app.setAsDefaultProtocolClient(protocolName)
     }
   }
 

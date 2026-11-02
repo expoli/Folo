@@ -2,10 +2,11 @@ import {
   buildBetterAuthSessionTokenCookieHeader,
   getBetterAuthSessionTokenCookieName,
 } from "@follow/shared/auth-cookie"
+import { APP_PROTOCOL } from "@follow/shared/constants"
 import { env } from "@follow/shared/env.desktop"
 import { createAuthRequestOriginHeaders, createDesktopAPIHeaders } from "@follow/utils/headers"
 import PKG from "@pkg"
-import { net } from "electron"
+import { app, net, shell } from "electron"
 import { IpcMethod, IpcService } from "electron-ipc-decorator"
 
 import { BETTER_AUTH_COOKIE_NAME_SESSION_TOKEN } from "~/constants/app"
@@ -19,11 +20,14 @@ import {
   persistManagedAuthCookiesFromSetCookieHeader,
   removeManagedAuthCookies,
 } from "../../lib/auth-cookies"
+import type { BrowserLoginCallback } from "../../lib/browser-login-callback"
+import { createBrowserLoginCallback } from "../../lib/browser-login-callback"
 import {
   getCliSessionToken,
   isCliSyncEnabled,
   syncSessionToCliConfig,
 } from "../../lib/cli-session-sync"
+import { openDeepLink } from "../../lib/deep-link"
 import { deleteNotificationsToken, updateNotificationsToken } from "../../lib/user"
 import { logger } from "../../logger"
 
@@ -31,6 +35,8 @@ export class AuthService extends IpcService {
   static override readonly groupName = "auth"
 
   private pendingTwoFactorCookieHeader: string | null = null
+  private browserLoginCallback: BrowserLoginCallback | null = null
+  private browserLoginAttempt = 0
 
   private async getManagedCookieHeader(): Promise<string> {
     const mainWindow = WindowManager.getMainWindow()
@@ -379,6 +385,45 @@ export class AuthService extends IpcService {
       },
       payload.headers,
     )
+  }
+
+  @IpcMethod()
+  async openBrowserLogin(provider: string): Promise<void> {
+    const loginURL = new URL(`${env.VITE_WEB_URL}/login`)
+    loginURL.searchParams.set("provider", provider)
+    let callback: BrowserLoginCallback | null = null
+
+    if (!app.isPackaged) {
+      const attempt = ++this.browserLoginAttempt
+      this.browserLoginCallback?.close()
+      this.browserLoginCallback = null
+      callback = await createBrowserLoginCallback({
+        onToken: (token) => {
+          if (attempt !== this.browserLoginAttempt) return
+          const url = new URL(`${APP_PROTOCOL}://auth`)
+          url.searchParams.set("token", token)
+          openDeepLink(url.toString())
+          const mainWindow = WindowManager.getMainWindow()
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            if (mainWindow.isMinimized()) mainWindow.restore()
+            WindowManager.showMainWindow(mainWindow)
+          }
+        },
+      })
+      if (attempt !== this.browserLoginAttempt) {
+        callback.close()
+        return
+      }
+      this.browserLoginCallback = callback
+      loginURL.searchParams.set("cli_callback", callback.url)
+    }
+
+    try {
+      await shell.openExternal(loginURL.toString())
+    } catch (error) {
+      callback?.close()
+      throw error
+    }
   }
 
   @IpcMethod()

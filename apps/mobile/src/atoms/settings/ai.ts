@@ -2,6 +2,7 @@ import { defaultAISettings } from "@follow/shared/settings/defaults"
 import type { AISettings, LocalAIGatewaySettings } from "@follow/shared/settings/interface"
 
 import { createSettingAtom } from "./internal/helper"
+import { applyLocalGatewayPatch } from "./local-gateway"
 
 /**
  * AI settings on this device. Desktop seeds the gateway fields from `VITE_LOCAL_AI_GATEWAY_URL`;
@@ -31,5 +32,5 @@ export const {
 
 /** Writes part of the local-AI settings and keeps the fields that are not part of the patch. */
 export const setLocalAIGatewaySetting = (patch: Partial<LocalAIGatewaySettings>) => {
-  setAISetting("localGateway", { ...getAISettings().localGateway, ...patch })
+  setAISetting("localGateway", applyLocalGatewayPatch(getAISettings().localGateway, patch))
 }

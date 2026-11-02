@@ -1,4 +1,7 @@
-import { DEFAULT_RECOMMEND_FEEDS_SHORTCUT_ID } from "@follow/shared/settings/defaults"
+import {
+  DEFAULT_RECOMMEND_FEEDS_SHORTCUT_ID,
+  DEFAULT_SUMMARIZE_TIMELINE_SHORTCUT_ID,
+} from "@follow/shared/settings/defaults"
 import { isLocalAIEnabled } from "@follow/store/ai-local/config"
 import { autoBindThis } from "@follow/utils/bind-this"
 import { createDesktopAPIHeaders } from "@follow/utils/headers"
@@ -138,6 +141,9 @@ export class ChatSliceActions {
   }
 
   private chatInstance: ZustandChat
+  // Request scenes are not part of persisted message metadata. Reopened history falls back to
+  // its shortcut; live turns retain explicit overrides for regeneration and tool approval.
+  private messageScenes = new Map<string, string>()
   // Bumped by every chat switch or new chat, so a slower earlier switch can tell it is outdated
   private switchToken = 0
   constructor(
@@ -339,22 +345,23 @@ export class ChatSliceActions {
   sendMessage = async (message: string | SendingUIMessage, options?: ChatRequestOptions) => {
     try {
       // Convert string to message object if needed
-      const messageObj =
+      const messageObj: SendingUIMessage =
         typeof message === "string"
-          ? ({ parts: [{ type: "text", text: message }] } as Parameters<
-              typeof this.chatInstance.sendMessage
-            >[0])
-          : (message as Parameters<typeof this.chatInstance.sendMessage>[0])
+          ? {
+              id: this.chatInstance.generateId(),
+              role: "user",
+              parts: [{ type: "text", text: message }],
+            }
+          : message
+      const messageScenes = this.messageScenes
 
       // A self-hosted gateway cannot resolve the ids in the context blocks, nor the timeline a
-      // shortcut points at, so everything it needs travels with the request.
-      const localAIContext =
-        isLocalAIEnabled() && messageObj?.parts
-          ? await this.createLocalAIContext({
-              id: messageObj.id,
-              parts: messageObj.parts as BizUIMessage["parts"],
-            })
-          : null
+      // shortcut points at, so everything it needs travels with the request. The scene travels
+      // per request too: a shortcut asks for a summary without switching the store's scene.
+      const scene = this.sceneOf(messageObj, options)
+      const localAIContext = isLocalAIEnabled()
+        ? await this.createLocalAIContext(messageObj, scene)
+        : null
 
       // A local model has no access to the interface language, so the request carries it; the MCP
       // services it may use are the renderer's settings too.
@@ -364,7 +371,7 @@ export class ChatSliceActions {
       const finalOptions = merge(
         {
           body: {
-            scene: this.get().scene,
+            scene,
             ...(localAIContext ? { localAIContext } : {}),
             // A local model has no access to the interface language, so the request carries it.
             ...(isLocalAIEnabled() ? { language: getActionLanguage() } : {}),
@@ -375,7 +382,23 @@ export class ChatSliceActions {
         options,
       )
 
-      return await this.chatInstance.sendMessage(messageObj, finalOptions)
+      messageScenes.set(messageObj.id, scene)
+      try {
+        return await this.chatInstance.sendMessage(
+          messageObj as Parameters<typeof this.chatInstance.sendMessage>[0],
+          finalOptions,
+        )
+      } finally {
+        // Keep a failed request replayable if the SDK retained its question, but do not remember
+        // a scene for a message that never reached the conversation.
+        if (
+          !this.getMessages().some(
+            (message) => message.id === messageObj.id && message.role === "user",
+          )
+        ) {
+          messageScenes.delete(messageObj.id)
+        }
+      }
     } catch (error) {
       this.setError(error as Error)
       throw error
@@ -385,8 +408,15 @@ export class ChatSliceActions {
   /**
    * Builds the payload a local gateway needs: the entries behind the context blocks, the timeline
    * a date mention points at, and the feed catalogue the "recommend feeds" shortcut picks from.
+   *
+   * `scene` is the one the request carries, not the store's: a shortcut sends
+   * `scene: "timeline-summary"` per request while the store stays on "general", and the pre-pass
+   * of a summary must follow the request that asked for it.
    */
-  private createLocalAIContext = async (message: { id?: string; parts: BizUIMessage["parts"] }) => {
+  private createLocalAIContext = async (
+    message: { id?: string; parts: BizUIMessage["parts"] },
+    scene: string = this.get().scene,
+  ) => {
     if (!isLocalAIEnabled()) return null
 
     const question = localAIContextQuestion(message.parts)
@@ -407,8 +437,26 @@ export class ChatSliceActions {
       feedCandidates,
       // A timeline summary asks about a whole selection, so the articles the prompt cannot carry
       // travel as text for the main process to summarize; a normal chat stays as light as before.
-      reduce: this.get().scene === "timeline-summary",
+      reduce: scene === "timeline-summary",
     })
+  }
+
+  /** Explicit request options win; continuations retain the scene of the live user turn. */
+  private sceneOf = (
+    message?: Pick<SendingUIMessage, "id" | "parts"> | null,
+    options?: ChatRequestOptions,
+  ) => {
+    const requestedScene = (options?.body as { scene?: unknown } | undefined)?.scene
+    if (typeof requestedScene === "string") return requestedScene
+    if (!isLocalAIEnabled()) return this.get().scene
+
+    const previousScene = message ? this.messageScenes.get(message.id) : undefined
+    if (previousScene !== undefined) return previousScene
+
+    return message &&
+      extractShortcutIdFromMessageParts(message.parts) === DEFAULT_SUMMARIZE_TIMELINE_SHORTCUT_ID
+      ? "timeline-summary"
+      : this.get().scene
   }
 
   /** The user message a regenerate request belongs to, so the local context matches it. */
@@ -433,16 +481,22 @@ export class ChatSliceActions {
   regenerate = async ({ messageId, ...options }: { messageId: string } & ChatRequestOptions) => {
     try {
       // Regenerating must ship the same local context as the original send; the gateway has no
-      // server-side history to replay it from.
-      const userMessage = isLocalAIEnabled() ? this.getUserMessage(messageId) : null
-      const localAIContext = userMessage ? await this.createLocalAIContext(userMessage) : null
+      // server-side history to replay it from. The scene is the one that message was sent with —
+      // a summary keeps its pre-pass instead of falling back to the store's "general".
+      const userMessage = this.getUserMessage(messageId)
+      const scene = this.sceneOf(userMessage, options)
+      const messageScenes = this.messageScenes
+      const localAIContext =
+        isLocalAIEnabled() && userMessage
+          ? await this.createLocalAIContext(userMessage, scene)
+          : null
 
       // Use the AI SDK's regenerate method
       const mcpServices = isLocalAIEnabled() ? enabledMcpServices() : []
       const finalOptions = merge(
         {
           body: {
-            scene: this.get().scene,
+            scene,
             ...(localAIContext ? { localAIContext } : {}),
             ...(isLocalAIEnabled() ? { language: getActionLanguage() } : {}),
             ...(mcpServices.length > 0 ? { mcpServices } : {}),
@@ -450,6 +504,7 @@ export class ChatSliceActions {
         },
         options,
       )
+      if (userMessage) messageScenes.set(userMessage.id, scene)
       return await this.chatInstance.regenerate({ messageId, ...finalOptions })
     } catch (error) {
       this.setError(error as Error)
@@ -467,6 +522,10 @@ export class ChatSliceActions {
    *
    * The chat continues by itself once the answer is in the message list (`sendAutomaticallyWhen`
    * on the chat instance), so this only records the decision; the same answer keeps streaming.
+   *
+   * The continued request is a new one: without the options an approval carries, it would go out
+   * with the transport's body alone. A local gateway then receives no context, and its reading
+   * tools fall back to the whole account instead of the timeline the conversation was about.
    */
   addToolApprovalResponse = async ({
     id,
@@ -478,10 +537,32 @@ export class ChatSliceActions {
     reason?: string
   }) => {
     try {
+      const lastUserMessage = isLocalAIEnabled()
+        ? [...this.getMessages()].reverse().find((message) => message.role === "user")
+        : undefined
+      const scene = this.sceneOf(lastUserMessage)
+      const localAIContext = lastUserMessage
+        ? await this.createLocalAIContext(lastUserMessage, scene)
+        : null
+      const mcpServices = isLocalAIEnabled() ? enabledMcpServices() : []
+
       await this.chatInstance.addToolApprovalResponse({
         id,
         approved,
         ...(reason ? { reason } : {}),
+        ...(isLocalAIEnabled()
+          ? {
+              options: {
+                body: {
+                  scene,
+                  ...(localAIContext ? { localAIContext } : {}),
+                  language: getActionLanguage(),
+                  ...(mcpServices.length > 0 ? { mcpServices } : {}),
+                },
+                headers: createDesktopAPIHeaders({ version: PKG.version }),
+              },
+            }
+          : {}),
       })
     } catch (error) {
       this.setError(error as Error)
@@ -565,6 +646,8 @@ export class ChatSliceActions {
       this.set,
     )
 
+    this.messageScenes = new Map()
+
     // Update store state
     this.set((state) => ({
       ...state,
@@ -610,6 +693,8 @@ export class ChatSliceActions {
         },
         this.set,
       )
+
+      this.messageScenes = new Map()
 
       // Update store state
       this.set((state) => ({

@@ -26,11 +26,16 @@ export interface LocalAIContextEntry {
   publishedAt?: string | null
   content?: string | null
   /**
-   * Text of an article the prompt is too small to carry verbatim: the main process summarizes it
-   * into a note first, so a summary of a whole day covers every matched article instead of the
-   * newest handful. Only sent when the caller asks for it (a summary shortcut, not a chat).
+   * Text supplied to the summary pre-pass, bounded separately from the prompt. A truncated entry
+   * only carries it when it covers at least the text already attached in `content`. Only sent for
+   * summaries; the pre-pass may receive a prefix of a long article.
    */
   body?: string | null
+  /**
+   * The text was cut to the prompt budget. A note may replace it only after the pre-pass reads at
+   * least the same range; otherwise the prompt keeps this text and its truncation marker.
+   */
+  contentTruncated?: boolean
 }
 
 /** A feed the local model may recommend; a gateway cannot read Folo's catalogue itself. */
@@ -63,6 +68,9 @@ export interface LocalAIContextCoverage {
   matched: number
   /** The window the prompt named, when it named one, for the note the model reads. */
   window?: string
+  /** The same window's bounds, so a reading tool scopes itself to it instead of the whole timeline. */
+  publishedAfter?: string
+  publishedBefore?: string
 }
 
 export interface BuildLocalAIContextOptions {
@@ -99,6 +107,20 @@ const truncateText = (text: string, limit: number) => {
 
   return `${text.slice(0, limit)}\n…[truncated ${text.length - limit} chars]`
 }
+
+/**
+ * The prompt's period as coverage: the label the prompt shows, plus the bounds a reading tool
+ * scopes itself to. Without the bounds a question about "today" would scan every unread entry of
+ * the timeline while the attached entries were already cut to that day.
+ */
+const periodCoverage = (window: LocalAITimelineWindow | null) =>
+  window
+    ? {
+        window: window.label,
+        publishedAfter: window.start.toISOString(),
+        publishedBefore: window.end.toISOString(),
+      }
+    : {}
 
 const MENTION_DATE_TAG = /<mention-date\b([^>]*)>/gi
 
@@ -236,7 +258,7 @@ export const parseMentionDateWindow = (
  */
 const LISTED_ENTRY_LIMIT = 200
 
-/** Longest text sent for one article of a wide selection; a note rarely needs more of it. */
+/** Longest text the pre-pass may read for one article, including articles already partly attached. */
 const REDUCE_ENTRY_CHARS = 6000
 /** Text the reduce pre-pass may read for one request, so one summary stays bounded. */
 const REDUCE_TOTAL_CHARS = 200_000
@@ -246,10 +268,12 @@ const metadataChars = (entry: EntryModel) =>
   (entry.title?.length ?? 0) + (entry.url?.length ?? 0) + 40
 
 /** The text of an article that travels for summarizing instead of for the prompt itself. */
-const reduceBody = (entry: EntryModel, allowance: number) => {
-  const text = entryText(entry).trim()
+const reduceBody = (entry: EntryModel, allowance: number, minimumChars: number) => {
   const limit = Math.min(REDUCE_ENTRY_CHARS, allowance)
-  if (!text || limit <= 0) return null
+  if (limit <= 0 || limit < minimumChars) return null
+
+  const text = entryText(entry).trim()
+  if (!text) return null
 
   return text.length <= limit ? text : text.slice(0, limit)
 }
@@ -292,7 +316,13 @@ const takeEntries = (
       remainingListing -= metadataChars(entry)
     }
 
-    const body = content || !options.reduce ? null : reduceBody(entry, remainingReduce)
+    // A note of a shorter prefix would discard facts the prompt already carries. Keep the attached
+    // text when either reduce budget cannot cover that range.
+    const truncated = !!content && content !== source
+    const body =
+      options.reduce && (!content || truncated)
+        ? reduceBody(entry, remainingReduce, content ? limit : 0)
+        : null
     if (body) remainingReduce -= body.length
 
     entries.push({
@@ -302,6 +332,7 @@ const takeEntries = (
       feedId: entry.feedId,
       publishedAt: entry.publishedAt.toISOString(),
       content,
+      ...(truncated ? { contentTruncated: true } : {}),
       ...(options.reduce ? { body } : {}),
     })
   }
@@ -475,7 +506,7 @@ export const buildLocalAIContext = (
         ...(feeds ? [{ type: "feedCandidates", value: String(feeds.length) }] : []),
       ],
       entries: timeline?.entries ?? [],
-      ...(timeline ? { coverage: { matched: timeline.matched, window: timeline.label } } : {}),
+      ...(timeline ? { coverage: { matched: timeline.matched, ...periodCoverage(window) } } : {}),
       ...(reduce && timeline ? { fetchBodies: true } : {}),
       ...(feeds ? { feeds } : {}),
     }
@@ -491,6 +522,23 @@ export const buildLocalAIContext = (
     (block) =>
       block.type === "mainFeed" || block.type === "mainView" || block.type === "unreadOnly",
   )
+
+  // An article chat names no timeline, but the entry's own feed is still the scope it is about.
+  // Sent as a timeline block, it lets the gateway's reading tools stay inside that feed instead of
+  // falling back to the whole account. Two articles from different feeds name no single scope, so
+  // nothing is added then.
+  if (!hasTimelineBlock) {
+    const referencedFeeds = new Set(
+      Array.from(explicitEntryIds)
+        .map((entryId) => getEntry(entryId)?.feedId)
+        .filter((feedId): feedId is string => !!feedId),
+    )
+    const [referencedFeed] = referencedFeeds
+    if (referencedFeeds.size === 1 && referencedFeed) {
+      blocks.push({ type: "mainFeed", value: referencedFeed })
+    }
+  }
+
   const scoped = hasTimelineBlock ? resolveScopeEntries(readContextScope(blocks)) : []
   // The window applies here too: a summary of "today" that silently covered the newest entries of
   // the entire view would answer about the wrong period.
@@ -516,9 +564,14 @@ export const buildLocalAIContext = (
   }
 
   if (candidates.length === 0) {
-    // With a window, an empty selection is worth reporting: the answer should say the period holds
-    // nothing instead of quietly reading the whole view.
-    return window ? { blocks, entries: [], coverage: { matched: 0, window: window.label } } : null
+    // The selection may legitimately hold nothing (no unread here, or a view the local cache has
+    // not filled yet). Its blocks still say what the user is looking at, and the gateway's tools
+    // scope themselves with them; without a window the rest of the request is empty on purpose.
+    return {
+      blocks,
+      entries: [],
+      ...(window ? { coverage: { matched: 0, ...periodCoverage(window) } } : {}),
+    }
   }
 
   const budget = getLocalAIContextBudget()
@@ -550,12 +603,19 @@ export const buildLocalAIContext = (
     reduce,
   })
 
-  if (entries.length === 0) return null
+  // A budget that carries nothing still leaves the selection worth stating: the tools read by it.
+  if (entries.length === 0) {
+    return {
+      blocks,
+      entries: [],
+      coverage: { matched: ordered.length, ...periodCoverage(window) },
+    }
+  }
 
   return {
     blocks,
     entries,
-    coverage: { matched: ordered.length, ...(window ? { window: window.label } : {}) },
+    coverage: { matched: ordered.length, ...periodCoverage(window) },
     ...(reduce ? { fetchBodies: true } : {}),
   }
 }

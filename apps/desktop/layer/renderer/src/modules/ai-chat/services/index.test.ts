@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test, vi } from "vitest"
 
-import { AIPersistService } from "./index"
+import { AIPersistService, escapeLikePrefix } from "./index"
 
 const { findFirstMock, deleteWhereMock, valuesMock, remoteDeleteMock } = vi.hoisted(() => ({
   findFirstMock: vi.fn(),
@@ -65,5 +65,12 @@ describe("AIPersistService remote deletion", () => {
 
     expect(remoteDeleteMock).toHaveBeenCalledTimes(1)
     expect(remoteDeleteMock).toHaveBeenCalledWith({ chatId: "chat-remote" })
+  })
+})
+
+describe("escapeLikePrefix", () => {
+  test("escapes the wildcards a folder name can carry", () => {
+    expect(escapeLikePrefix("folder:100%_done:")).toBe("folder:100\\%\\_done:")
+    expect(escapeLikePrefix("a\\b")).toBe("a\\\\b")
   })
 })

@@ -1,0 +1,8 @@
+flowchart TD
+  A["External local agent: summarize with citations"] <-->|"Read-only MCP / local access token"| B["Folo desktop: guarded local service"]
+  B <-->|"Allowlisted IPC; app must be ready"| C["Existing signed-in data services"]
+  C <-->|"Paged unread list and entry details"| D["Folo account API"]
+  B -.->|"Opt-in guarded article fetch"| E["Public article pages"]
+  B --> F["Results: read state, content source, coverage, errors"]
+  F --> A
+  G["No mark-read tool; no login credentials exposed"] --- B

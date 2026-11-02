@@ -34,19 +34,33 @@ stored, and the reason the port could not be bound. The port is fixed on purpose
 configured with a URL that must not move. If something else already holds `41610`, the feature
 reports the listen error and stays off instead of picking another port.
 
-## The same four tools inside the app
+## Folo reading tools inside the app
 
-The chat panel's local AI calls these tools itself, so it can read unread entries instead of only
-working with what the client attached to the message. Two differences from the endpoint:
+The chat panel's local AI calls the four endpoint tools itself and offers `folo_unread_digest`,
+which combines scanning, listing and reading for a recap. Three differences from the endpoint:
 
 - The endpoint switch and the token are not involved. The panel talks to the service in-process, so
   it reads the account without the user exposing a port; **Article page fetching** still gates the
   `source_page` mode exactly as it does for an agent.
 - Reading stays read-only. There is no tool that marks anything read, for either caller.
+- **A scan follows the timeline on screen, and the period a prompt names.** When the panel shows a
+  feed (or a view), the tools read that selection by default, so "unread" means the unread entries
+  of what you are looking at; a prompt about "today" also bounds the scan to those days. The model
+  only names a wider scope when the question is about one — asking it to recap every source still
+  retains the question's date bounds unless it explicitly supplies different ones.
 
-A chat spends at most six model round trips on tools, and the timeline-summary shortcut uses none
-(its pre-pass already reads every matched article). An endpoint that rejects tool calling is
-detected on its first refusal, and later chats in the same run go out without tools.
+A chat spends at most six model round trips on tools. A timeline summary uses no tools; its bounded
+pre-pass works from the articles the client supplied, which is not proof of account-wide coverage.
+A note is labelled as a summary of the supplied text. It never replaces a longer attached text with
+a summary of a shorter prefix; if the reduce budget cannot cover that text, the existing text and
+its truncation marker remain. Sufficient existing text or a cached note avoids another page fetch.
+
+When an endpoint explicitly rejects tool calling before any content or tool call has been emitted,
+the same request retries once without tools. Later chats in the same app run also omit tools.
+Already-emitted content or tool calls prevent a retry, so tool work cannot be repeated by fallback.
+Initial sends, regeneration and approval continuations reuse the message's effective scene.
+Explicit per-request scene overrides are retained for live turns. Reopened history infers its scene
+from the shortcut and current chat mode; those overrides are not persisted with the messages.
 
 ### The user's own MCP services
 
@@ -60,7 +74,7 @@ one answer can combine the user's notes with what they read. What applies:
 - **Per request.** Connections open when a chat starts and close when its answer is finished;
   nothing is cached between chats, so a service the user just disabled or re-authenticated is read
   as it is now. A service that cannot be reached is skipped and the answer goes on without it.
-- **Bounded.** Up to 8 services and 26 tools per request (Folo's four come on top), 16 000
+- **Bounded.** Up to 8 services and 26 tools per request (Folo's five come on top), 16 000
   characters per tool result, 15 seconds per call, and headers come from the service configuration
   (a personal access token, a bearer key). There is no OAuth flow: a service that only supports
   OAuth cannot be used from the loop yet.

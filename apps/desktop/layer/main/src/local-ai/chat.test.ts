@@ -1,3 +1,4 @@
+import { LOCAL_AI_DIGEST_TOOL_NAME } from "@follow/shared/local-agent-reading"
 import type { LocalAIDirectConfig } from "@follow/shared/settings/local-ai"
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 
@@ -102,7 +103,7 @@ const stubUpstream = (responses: Response[]) => {
 const handlers = (overrides: Partial<LocalAgentReadingToolHandlers> = {}) => {
   const beginScan = vi.fn(async () => ({
     ok: true as const,
-    data: { scanId: "scan-1", candidates: 1 },
+    data: { scanId: "scan-1", candidates: 1, selectedCount: 0, sources: [] },
   }))
   const value: LocalAgentReadingToolHandlers = {
     status: async () => ({ signedIn: true }) as never,
@@ -116,7 +117,12 @@ const handlers = (overrides: Partial<LocalAgentReadingToolHandlers> = {}) => {
 }
 
 const send = async (
-  options: { scene?: string; mcpServices?: unknown; messages?: unknown } = {},
+  options: {
+    scene?: string
+    mcpServices?: unknown
+    messages?: unknown
+    localAIContext?: unknown
+  } = {},
 ) => {
   const response = await createChatStreamResponse({
     body: {
@@ -129,6 +135,7 @@ const send = async (
       ],
       scene: options.scene ?? "general",
       ...(options.mcpServices ? { mcpServices: options.mcpServices } : {}),
+      ...(options.localAIContext ? { localAIContext: options.localAIContext } : {}),
     },
     config,
     apiKey: "test-key",
@@ -168,6 +175,79 @@ describe("a chat with tools", () => {
     expect(JSON.stringify(calls[1]?.body)).toContain("scan-1")
     expect(text).toContain("folo_begin_unread_scan")
     expect(text).toContain("这个源还有 1 条未读。")
+  })
+
+  test("scopes an unscoped scan to the feed the panel is showing", async () => {
+    const { value, beginScan } = handlers()
+    setReadingToolHandlers(value)
+    stubUpstream([
+      // The model omits `scope`, which the reading contract reads as the whole account.
+      sseResponse([toolCallChunk("folo_begin_unread_scan", "{}"), finishChunk("tool_calls")]),
+      sseResponse([textChunk("这个源还有 1 条未读。"), finishChunk("stop")]),
+    ])
+
+    await send({
+      localAIContext: {
+        blocks: [
+          { type: "mainFeed", value: "feed-1" },
+          { type: "unreadOnly", value: "true" },
+        ],
+      },
+    })
+
+    expect(beginScan).toHaveBeenCalledWith({ scope: { feedIds: ["feed-1"] } })
+  })
+
+  test("scopes an unscoped scan to the period the prompt named", async () => {
+    const { value, beginScan } = handlers()
+    setReadingToolHandlers(value)
+    stubUpstream([
+      sseResponse([toolCallChunk("folo_begin_unread_scan", "{}"), finishChunk("tool_calls")]),
+      sseResponse([textChunk("今天没有未读。"), finishChunk("stop")]),
+    ])
+
+    await send({
+      localAIContext: {
+        blocks: [],
+        coverage: {
+          matched: 0,
+          publishedAfter: "2026-10-30T00:00:00.000Z",
+          publishedBefore: "2026-10-30T23:59:59.999Z",
+        },
+      },
+    })
+
+    expect(beginScan).toHaveBeenCalledWith({
+      scope: {
+        publishedAfter: "2026-10-30T00:00:00.000Z",
+        publishedBefore: "2026-10-30T23:59:59.999Z",
+      },
+    })
+  })
+
+  test("scopes the digest to the panel's feed and keeps the window it asked for", async () => {
+    const { value, beginScan } = handlers()
+    setReadingToolHandlers(value)
+    const calls = stubUpstream([
+      sseResponse([
+        toolCallChunk(LOCAL_AI_DIGEST_TOOL_NAME, '{"window":"today"}'),
+        finishChunk("tool_calls"),
+      ]),
+      sseResponse([textChunk("今天这个源没有未读。"), finishChunk("stop")]),
+    ])
+
+    const text = await send({
+      localAIContext: {
+        blocks: [{ type: "mainFeed", value: "feed-1" }],
+      },
+    })
+
+    expect(beginScan).toHaveBeenCalledWith({
+      scope: expect.objectContaining({ feedIds: ["feed-1"] }),
+    })
+    expect(calls).toHaveLength(2)
+    expect(text).toContain("今天这个源没有未读。")
+    expect(text).not.toContain('"type":"error"')
   })
 
   test("offers no tools to a timeline summary, which already reads its articles", async () => {
@@ -256,7 +336,7 @@ describe("a chat with tools", () => {
     expect(text).toContain("已写入。")
   })
 
-  test("stops sending tools once the endpoint says it has none", async () => {
+  test("retries a tool rejection in the same request and remembers the unsupported endpoint", async () => {
     const { value } = handlers()
     setReadingToolHandlers(value)
     const calls = stubUpstream([
@@ -264,14 +344,60 @@ describe("a chat with tools", () => {
         status: 400,
         headers: { "Content-Type": "application/json" },
       }),
-      sseResponse([textChunk("好的"), finishChunk("stop")]),
+      sseResponse([textChunk("当前请求已降级。"), finishChunk("stop")]),
+      sseResponse([textChunk("后续请求不再尝试工具。"), finishChunk("stop")]),
     ])
 
-    // The first chat fails the way the endpoint does; the second one is sent without tools.
-    await send()
-    await send()
+    const first = await send()
+    const second = await send()
 
+    expect(calls).toHaveLength(3)
     expect(calls[0]?.body?.tools).toBeDefined()
     expect(calls[1]?.body?.tools).toBeUndefined()
+    expect(calls[2]?.body?.tools).toBeUndefined()
+    expect(JSON.stringify(calls[1]?.body)).not.toContain("folo_begin_unread_scan")
+    expect(first).toContain("当前请求已降级。")
+    expect(first).not.toContain('"type":"error"')
+    expect(first.match(/"type":"start"/g)).toHaveLength(1)
+    expect(first.match(/"type":"finish"/g)).toHaveLength(1)
+    expect(second).toContain("后续请求不再尝试工具。")
+  })
+
+  test("does not retry a rejection after a tool has already executed", async () => {
+    const { value, beginScan } = handlers()
+    setReadingToolHandlers(value)
+    const calls = stubUpstream([
+      sseResponse([toolCallChunk("folo_begin_unread_scan", "{}"), finishChunk("tool_calls")]),
+      new Response(JSON.stringify({ error: { message: "tools are not supported" } }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      }),
+    ])
+
+    const text = await send()
+
+    expect(beginScan).toHaveBeenCalledTimes(1)
+    expect(calls).toHaveLength(2)
+    expect(text).toContain('"type":"error"')
+  })
+
+  test("keeps unrelated endpoint errors visible without disabling or retrying tools", async () => {
+    const { value } = handlers()
+    setReadingToolHandlers(value)
+    const calls = stubUpstream([
+      new Response(JSON.stringify({ error: { message: "Invalid API key" } }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      }),
+      sseResponse([textChunk("修正凭据后的回答。"), finishChunk("stop")]),
+    ])
+
+    const first = await send()
+    const second = await send()
+
+    expect(first).toContain('"type":"error"')
+    expect(calls).toHaveLength(2)
+    expect(calls[1]?.body?.tools).toBeDefined()
+    expect(second).toContain("修正凭据后的回答。")
   })
 })

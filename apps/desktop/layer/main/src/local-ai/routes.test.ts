@@ -448,9 +448,12 @@ describe("routeLocalAIRequest", () => {
     const system = (calls.at(-1)!.body?.messages as { role: string; content: string }[]).find(
       (message) => message.role === "system",
     )
+    const sections = system?.content.split(/\n(?=### \[)/) ?? []
     for (let index = 1; index <= 9; index += 1) {
-      expect(system?.content).toContain(`### [${index}] Article ${index}`)
-      expect(system?.content).toContain(`(summarised from its full text)\nnote ${index}`)
+      const article = sections.find((section) =>
+        section.startsWith(`### [${index}] Article ${index}\n`),
+      )
+      expect(article?.trim().split("\n").at(-1)).toBe(`note ${index}`)
     }
 
     expect(system?.content).toContain("9 summarised from their text")

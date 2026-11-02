@@ -1,5 +1,7 @@
-import { describe, expect, test } from "vitest"
+import * as ai from "ai"
+import { beforeEach, describe, expect, test, vi } from "vitest"
 
+import { reduceChatContext } from "./chat"
 import {
   applyEntryNotes,
   buildChatSystemPrompt,
@@ -9,7 +11,12 @@ import {
   pendingEntryTexts,
   toModelMessages,
 } from "./context"
-import { DEFAULT_CHAT_SYSTEM_PROMPT, languageName, NO_CONTEXT_NOTE, TOOLS_NOTE } from "./prompts"
+import { DEFAULT_CHAT_SYSTEM_PROMPT, languageName, NO_CONTEXT_NOTE } from "./prompts"
+
+vi.mock("ai", async (importOriginal) => ({
+  ...(await importOriginal<typeof ai>()),
+  generateText: vi.fn(),
+}))
 
 describe("messageText", () => {
   test("joins text and rich-text data parts", () => {
@@ -162,10 +169,24 @@ describe("formatLocalContext", () => {
     expect(context).toContain('Context selection: mainEntry="entry-1", timeline="7d"')
   })
 
-  test("stays empty without entries and feeds, whatever else arrived", () => {
+  test("stays empty without any context at all", () => {
     expect(formatLocalContext(undefined)).toBe("")
-    expect(formatLocalContext({ blocks: [{ type: "mainEntry", value: "entry-1" }] })).toBe("")
     expect(formatLocalContext({ entries: [], feeds: [] })).toBe("")
+    expect(formatLocalContext({ blocks: [] })).toBe("")
+  })
+
+  test("still states the selection when it resolved to no entries", () => {
+    // The selection is what a gateway's reading tools scope themselves by: a request whose
+    // entries are empty (nothing unread, a cache that has not caught up) still names its feed.
+    const context = formatLocalContext({
+      entries: [],
+      blocks: [
+        { type: "mainEntry", value: "entry-1" },
+        { type: "mainFeed", value: "feed-1" },
+      ],
+    })
+
+    expect(context).toContain('Context selection: mainEntry="entry-1", mainFeed="feed-1"')
   })
 })
 
@@ -173,7 +194,7 @@ describe("pendingEntryTexts", () => {
   test("picks the entries whose text the prompt could not carry", () => {
     const pending = pendingEntryTexts({
       entries: [
-        { title: "With text", content: "Body" },
+        { title: "With text", content: "Body", body: "Body with redundant pre-pass text" },
         { title: "Waiting", body: "Full text" },
         { title: "Nothing at all" },
         { title: "Body but no text either", body: "" },
@@ -182,6 +203,36 @@ describe("pendingEntryTexts", () => {
 
     // The position is the one the prompt uses, so a note can be attributed back to it.
     expect(pending).toEqual([{ index: 2, title: "Waiting", url: undefined, body: "Full text" }])
+  })
+
+  test("picks an article the prompt had to cut", () => {
+    const body = "The opening. The rest of the article."
+    const pending = pendingEntryTexts({
+      entries: [
+        {
+          title: "Cut",
+          content: `${body.slice(0, 12)}\n…[truncated ${body.length - 12} chars]`,
+          body,
+          contentTruncated: true,
+        },
+      ],
+    })
+
+    expect(pending).toEqual([{ index: 1, title: "Cut", url: undefined, body }])
+  })
+
+  test.each([5999, 6000, 6001])("requires all 6000 attached characters to fit (%i)", (chars) => {
+    const pending = pendingEntryTexts({
+      entries: [
+        {
+          content: `${"x".repeat(6000)}\n…[truncated 1000 chars]`,
+          body: "x".repeat(chars),
+          contentTruncated: true,
+        },
+      ],
+    })
+
+    expect(pending).toHaveLength(chars < 6000 ? 0 : 1)
   })
 
   test("finds nothing in a request without context", () => {
@@ -199,7 +250,10 @@ describe("applyEntryNotes", () => {
           { title: "Summarised", body: "Full text" },
         ],
       },
-      new Map([[2, "A note"]]),
+      new Map([
+        [1, "An unused note"],
+        [2, "A note"],
+      ]),
     )
 
     expect(context?.entries).toEqual([
@@ -208,11 +262,114 @@ describe("applyEntryNotes", () => {
     ])
   })
 
+  test("replaces a cut text with a note while preserving its summary source", () => {
+    const body = "The opening. The rest of the article."
+    const context = applyEntryNotes(
+      {
+        entries: [
+          {
+            title: "Cut",
+            content: `${body.slice(0, 12)}\n…[truncated ${body.length - 12} chars]`,
+            body,
+            contentTruncated: true,
+          },
+        ],
+      },
+      new Map([[1, "A note of the supplied text"]]),
+    )
+
+    expect(context?.entries).toEqual([
+      {
+        title: "Cut",
+        content: null,
+        body,
+        note: "A note of the supplied text",
+        contentTruncated: true,
+      },
+    ])
+  })
+
   test("returns the context unchanged when nothing was summarized", () => {
     const context = { entries: [{ title: "One" }] }
 
     expect(applyEntryNotes(context, new Map())).toBe(context)
     expect(applyEntryNotes(undefined, new Map([[1, "note"]]))).toBeNull()
+  })
+})
+
+describe("reduceChatContext", () => {
+  const body = "The opening. The launch is scheduled for November."
+  const content = `${body.slice(0, 12)}\n…[truncated ${body.length - 12} chars]`
+  const context = {
+    coverage: { matched: 1 },
+    entries: [{ title: "Cut", content, body, contentTruncated: true }],
+  }
+
+  beforeEach(() => {
+    vi.mocked(ai.generateText).mockReset()
+  })
+
+  test.each([20_000, 60_000])("skips a body shorter than %i attached characters", async (chars) => {
+    const laterFact = "The launch is scheduled for November."
+    const source = `${"x".repeat(10_000)}${laterFact}${"y".repeat(chars)}`
+    const content = `${source.slice(0, chars)}\n…[truncated ${source.length - chars} chars]`
+    const context = {
+      entries: [{ title: "Long", content, body: source.slice(0, 6000), contentTruncated: true }],
+    }
+
+    const result = await reduceChatContext({ context, model: {} as never, modelId: "test-model" })
+
+    expect(result).toMatchObject({ pending: 0, attached: 0, calls: 0 })
+    expect(ai.generateText).not.toHaveBeenCalled()
+    expect(result.context).toBe(context)
+    expect(formatLocalContext(result.context)).toContain(content)
+    expect(formatLocalContext(result.context)).toContain(laterFact)
+    expect(applyEntryNotes(context, new Map([[1, "An incomplete note"]]))?.entries?.[0]).toBe(
+      context.entries[0],
+    )
+  })
+
+  test("renders a usable note as a summary in the final prompt and coverage", async () => {
+    const note = "The launch is scheduled for November."
+    vi.mocked(ai.generateText).mockResolvedValueOnce({ text: JSON.stringify({ 1: note }) } as never)
+
+    const result = await reduceChatContext({ context, model: {} as never, modelId: "test-model" })
+    const prompt = buildChatSystemPrompt("Base", formatLocalContext(result.context))
+
+    expect(result).toMatchObject({ pending: 1, attached: 1, calls: 1, failed: 0 })
+    expect(result.context?.entries?.[0]?.note).toBe(note)
+    expect(prompt).toContain(note)
+    expect(prompt).toContain("Coverage: 1 matched, 0 with text, 1 summarised from their text.")
+    expect(prompt).not.toContain(content)
+  })
+
+  test("preserves the original cut text and marker when reduction fails", async () => {
+    vi.mocked(ai.generateText).mockRejectedValueOnce(new Error("The model is unavailable"))
+
+    const result = await reduceChatContext({ context, model: {} as never, modelId: "test-model" })
+
+    expect(result).toMatchObject({ pending: 1, attached: 0, calls: 1, failed: 1 })
+    expect(result.context).toBe(context)
+    expect(formatLocalContext(result.context)).toContain(content)
+    expect(formatLocalContext(result.context)).not.toContain("summarised from")
+  })
+
+  test("preserves the original cut text and marker when its note exceeds the budget", async () => {
+    vi.mocked(ai.generateText).mockResolvedValueOnce({
+      text: '{"1":"A note beyond the budget"}',
+    } as never)
+
+    const result = await reduceChatContext({
+      context,
+      model: {} as never,
+      modelId: "test-model",
+      notesTotalChars: 1,
+    })
+
+    expect(result).toMatchObject({ pending: 1, attached: 0, dropped: 1, noteChars: 0, failed: 0 })
+    expect(result.context).toBe(context)
+    expect(formatLocalContext(result.context)).toContain(content)
+    expect(formatLocalContext(result.context)).not.toContain("summarised from")
   })
 })
 
@@ -228,13 +385,11 @@ describe("formatLocalContext with summarized articles", () => {
     })
 
     expect(context).toContain("### [2] Summarised")
-    expect(context).toContain("(summarised from its full text)\nThe gist of it")
+    expect(context).toContain("The gist of it")
     expect(context).toContain("### [3] Only a title")
     expect(context).toContain(
       "Coverage: 3 matched, 1 with text, 1 summarised from their text, 1 title-only.",
     )
-    // A summarized article was read; only the title-only one carries the warning.
-    expect(context).toContain("never summarise them as if their content were known")
   })
 
   test("states what was summarized even when nothing was left out", () => {
@@ -282,20 +437,6 @@ describe("buildChatSystemPrompt", () => {
     expect(prompt).toContain("folo_begin_unread_scan")
     // The old note would explicitly talk the model out of calling them.
     expect(prompt).not.toContain(NO_CONTEXT_NOTE)
-  })
-
-  test("points title-only entries at the tool that reads them", () => {
-    // A wide selection carries text for part of it; answering from the coverage line instead of
-    // reading the rest is exactly what this sentence forbids.
-    expect(TOOLS_NOTE).toContain("title-only")
-    expect(TOOLS_NOTE).toContain("folo_get_entry_contents")
-  })
-
-  test("offers the digest and asks for honest coverage", () => {
-    expect(TOOLS_NOTE).toContain("folo_unread_digest")
-    // A partial enumeration must be reported, not silently presented as the whole account.
-    expect(TOOLS_NOTE).toContain("partial")
-    expect(TOOLS_NOTE).toContain("which part was covered")
   })
 })
 

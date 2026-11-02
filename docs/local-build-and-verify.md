@@ -96,6 +96,22 @@ sudo dpkg -i --reinstall Folo-<version>-linux-x64.deb
 If the packaging step hangs on a runner the way it does on this machine, the workaround noted above
 belongs in the repository as a pnpm patch (`patchedDependencies`), not in `node_modules`.
 
+## Sign in to an unpackaged build beside an installed Folo
+
+Run the development app with `pnpm --filter Folo run dev:electron`, or launch the local
+`build:electron-vite` output with Electron. Social sign-in opens the normal browser login page
+with a per-attempt callback at `http://127.0.0.1:<random-port>/callback/<random-path>`.
+The website sends its one-time token directly to the process that started the login, which applies
+it through the existing desktop authentication flow. The installed app is not opened for this handoff.
+
+Unpackaged instances do not register the global `folo://` / `follow://` handlers. Keep the installed
+app's associations as they are; no uninstall or `xdg-mime` change is needed. Packaged app login keeps
+its existing protocol flow. The loopback callback expires after five minutes; select a login provider
+again if it expires. Starting another attempt cancels the previous one.
+
+For an isolated test profile, set `FOLO_E2E_USER_DATA_DIR` before launching Electron. Authenticate
+in that instance; its cookies and settings remain separate from the installed app.
+
 ## When the running app looks broken
 
 - `nss_util.cc:377 … NSS error code: -8018` and `auth.fetchWithAuth: net::ERR_TIMED_OUT` are about

@@ -10,6 +10,15 @@ import { AI_CHAT_SPECIAL_ID_PREFIX } from "../constants"
 import type { BizUIMessage, BizUIMessagePart, BizUIMetadata } from "../store/types"
 import { isDataBlockPart, isFileAttachmentBlock } from "../utils/extractor"
 
+/**
+ * A `chatId LIKE` prefix with the wildcards escaped.
+ *
+ * A folder feed id carries its folder's name, which may contain `%` or `_`; unescaped, the lookup
+ * of one folder's summary could match sessions of another.
+ */
+export const escapeLikePrefix = (prefix: string) =>
+  prefix.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")
+
 class AIPersistServiceStatic {
   // Cache for session existence to avoid repeated queries
   private sessionExistsCache = new Map<string, boolean>()
@@ -393,7 +402,7 @@ class AIPersistServiceStatic {
     const prefix = `${AI_CHAT_SPECIAL_ID_PREFIX.TIMELINE_SUMMARY}${criteria.view}:${criteria.feedId}:${timelineSegment}:${unreadSegment}:`
     return db.query.aiChatTable
       .findFirst({
-        where: (table) => sql`${table.chatId} LIKE ${`${prefix}%`}`,
+        where: (table) => sql`${table.chatId} LIKE ${`${escapeLikePrefix(prefix)}%`} ESCAPE '\\'`,
         orderBy: (table, { desc }) => desc(table.updatedAt),
         columns: {
           chatId: true,

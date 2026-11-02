@@ -272,8 +272,11 @@ export const useAutoTimelineSummaryShortcut = () => {
 
         const message = buildSummaryMessage(tempEditor, contextBlocks, nanoid())
 
+        // The same scene the shortcut sends when the user starts it: a summary reads its articles
+        // in the reduce pre-pass and offers no tools (`docs/local-agent-reading.md`). Sending
+        // "general" here used to give one automatic summary a six-step tool budget on top.
         await chatActions.sendMessage(message, {
-          body: { scene: "general" },
+          body: { scene: "timeline-summary" },
         })
 
         automationStateRef.current.failed = false

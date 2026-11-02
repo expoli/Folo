@@ -57,6 +57,18 @@ describe("collectFetchTargets", () => {
     ])
   })
 
+  test("uses an existing reduce body instead of fetching a short prompt excerpt again", () => {
+    const url = "https://example.com/article"
+
+    expect(
+      collectFetchTargets([
+        { url, content: "Short prompt excerpt", body: "x".repeat(2000) },
+        { url, content: "x".repeat(2000), body: "Short body" },
+        { url, content: "Short excerpt", body: "Short body" },
+      ]),
+    ).toEqual([{ index: 3, url }])
+  })
+
   test("keeps the pass bounded", () => {
     const entries = Array.from({ length: 60 }, (_, index) =>
       entry(`https://example.com/${index}`, ""),

@@ -5,6 +5,7 @@ import { env } from "@follow/shared/env.desktop"
 import { createDesktopAPIHeaders } from "@follow/utils/headers"
 import PKG from "@pkg"
 
+import { ipcServices } from "./client"
 import { getAuthSessionToken } from "./client-session"
 
 const headers = createDesktopAPIHeaders({ version: PKG.version })
@@ -52,4 +53,11 @@ export const {
 
 export const forgetPassword = auth.authClient.requestPasswordReset
 
-export const { loginHandler } = auth
+export const loginHandler: Auth["loginHandler"] = async (provider, runtime, args) => {
+  if (IN_ELECTRON && ipcServices && provider !== "credential" && provider !== "magicLink") {
+    await ipcServices.auth.openBrowserLogin(provider)
+    return
+  }
+
+  return auth.loginHandler(provider, runtime, args)
+}

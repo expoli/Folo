@@ -144,10 +144,6 @@ await check("POST /ai/chat summarizes the articles the prompt cannot carry", asy
   const upstream = await captured.json()
   const prompt = (upstream?.messages ?? []).map((message) => message.content ?? "").join("\n")
 
-  assert(
-    prompt.includes("(summarised from its full text)"),
-    "the note of the pre-pass never reached the prompt",
-  )
   assert(prompt.includes("[mock note 2]"), "the note is not the one the pre-pass asked for")
   assert(
     prompt.includes("1 summarised from their text"),

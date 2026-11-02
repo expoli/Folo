@@ -17,7 +17,7 @@ import {
 } from "@follow/ai-runtime/provider"
 import { noteCacheKey } from "@follow/ai-runtime/reduce"
 import type { LocalAIDirectConfig } from "@follow/shared/settings/local-ai"
-import type { UIMessage } from "ai"
+import type { UIMessage, UIMessageChunk } from "ai"
 import { createUIMessageStream, createUIMessageStreamResponse, stepCountIs, streamText } from "ai"
 import { app } from "electron"
 import { join } from "pathe"
@@ -42,6 +42,7 @@ import {
   localAIToolSupportKey,
   markToolSupportRejected,
 } from "./tools"
+import { scopeFromContext, withDefaultScope } from "./tools/scope"
 
 const NOTES_CACHE_FILE = "local-ai-notes.json"
 
@@ -145,7 +146,9 @@ export const createChatStreamResponse = async (params: {
       })
     : null
   const tools = {
-    ...(toolsAllowed && handlers ? createLocalAITools(handlers) : {}),
+    ...(toolsAllowed && handlers
+      ? createLocalAITools(withDefaultScope(handlers, scopeFromContext(body.localAIContext)))
+      : {}),
     ...(mcp?.tools ?? {}),
   }
   const hasTools = Object.keys(tools).length > 0
@@ -185,8 +188,7 @@ export const createChatStreamResponse = async (params: {
         const targets = collectFetchTargets(contextEntries).filter((target) => {
           const entry = contextEntries[target.index - 1]
           const body = typeof entry?.body === "string" ? entry.body : ""
-          const hasContent = typeof entry?.content === "string" && !!entry.content
-          if (hasContent || !body) return true
+          if (!body) return true
 
           const title = typeof entry?.title === "string" ? entry.title : null
           return !notes.get(noteCacheKey({ modelId, language, title, body }))
@@ -280,26 +282,30 @@ export const createChatStreamResponse = async (params: {
         )
       }
 
-      writer.merge(
-        streamText({
+      const pipeReply = async (useTools: boolean) => {
+        // Keep only the envelope until the model produces something. A rejected initial tools
+        // request can then be replaced without emitting a failed message or replaying tool work.
+        const prefix: UIMessageChunk[] = []
+        let committed = false
+        let toolRejected = false
+        let retryWithoutTools = false
+        const reply = streamText({
           model,
           system: buildChatSystemPrompt(DEFAULT_CHAT_SYSTEM_PROMPT, localContext, language, {
-            toolsAvailable: hasTools,
+            toolsAvailable: useTools,
           }),
           messages,
           maxOutputTokens: call.maxOutputTokens,
           temperature: call.temperature,
           providerOptions: call.providerOptions,
           abortSignal,
-          ...(hasTools
+          ...(useTools
             ? {
                 tools,
                 stopWhen: stepCountIs(LOCAL_AI_MAX_TOOL_STEPS),
                 ...(toolApproval ? { toolApproval } : {}),
               }
             : {}),
-          // Reasoning models answer only after thinking, and a cap their thinking uses up leaves an
-          // empty reply; this line says which of the two happened.
           onFinish: ({ finishReason, usage }) => {
             console.log(
               `[local-ai] chat done: finish=${finishReason ?? "?"} output=${
@@ -310,18 +316,40 @@ export const createChatStreamResponse = async (params: {
         }).toUIMessageStream({
           sendReasoning: true,
           onError: (error) => {
-            // An endpoint without tool support fails before any text arrives; remembering it here
-            // makes the next chat in this run go out without tools instead of failing again.
-            if (toolsAllowed && isToolRejectionError(error)) {
+            if (useTools && isToolRejectionError(error)) {
               markToolSupportRejected(toolKey)
-              console.warn(
-                `[local-ai] chat: ${modelId} rejected tools, continuing without them from now on`,
-              )
+              toolRejected = true
+              return errorMessage(error, "The endpoint rejected tool calling")
             }
             return streamError(error)
           },
-        }),
-      )
+        })
+
+        for await (const chunk of reply) {
+          if (chunk.type === "error" && toolRejected && !committed && !abortSignal?.aborted) {
+            retryWithoutTools = true
+            console.warn(`[local-ai] chat: ${modelId} rejected tools; retrying without them`)
+          }
+          if (retryWithoutTools) continue
+          if (!committed && (chunk.type === "start" || chunk.type === "start-step")) {
+            prefix.push(chunk)
+            continue
+          }
+
+          if (!committed) {
+            committed = true
+            for (const pending of prefix) writer.write(pending)
+          }
+          writer.write(chunk)
+        }
+
+        return retryWithoutTools
+      }
+
+      if (await pipeReply(hasTools)) {
+        closeTools()
+        await pipeReply(false)
+      }
     },
   })
 

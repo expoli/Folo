@@ -83,13 +83,17 @@ VITE_LOCAL_AI_GATEWAY_URL=http://127.0.0.1:8788
 # VITE_LOCAL_AI_TOKEN=change-me        # only if GATEWAY_TOKEN is set
 ```
 
-Mobile (Expo) — `apps/mobile/.env` (or the shell that starts Metro). Mobile has no settings UI
-for the gateway yet, so the env is still the only way there:
+Mobile (Expo) — seed gateway settings through `apps/mobile/.env` (or the shell that starts Metro):
 
 ```bash
 EXPO_PUBLIC_LOCAL_AI_GATEWAY_URL=http://192.168.1.20:8788   # LAN address of the machine running the gateway
 # EXPO_PUBLIC_LOCAL_AI_TOKEN=change-me
 ```
+
+Mobile's **Settings → AI** screen also configures a direct OpenAI-compatible endpoint. Saving a
+usable direct address selects direct mode; saving an empty address or changing advanced options
+without a direct address preserves an existing gateway. The enable switch keeps the selected mode.
+Clearing the address while already in direct mode disables that runtime until an address is saved.
 
 Then start the app normally (`pnpm --filter Folo run dev:electron` for the desktop app, or
 `pnpm --filter @follow/mobile run android` / `ios`). When the gateway is off — no address, or the
@@ -135,10 +139,15 @@ per article/model/language) and attaches the notes to the prompt. The coverage n
 listed by title. The gateway reads its tuning from the `AI_REDUCE_*` variables above; direct mode
 reads the equivalent values from Settings → AI → Advanced.
 
+The client bounds reduce bodies to 6 000 characters per entry and 200 000 per request. A note only
+replaces attached text when its input covers that text's range; otherwise the longer text and its
+truncation marker remain. Notes are labelled as summaries of supplied text, not full articles.
+
 **Built-in direct mode also fetches what it reads.** A summary is only as good as the text it gets,
 and an entry that was never opened carries the excerpt its feed published. When the client marks a
-summary (`fetchBodies`), the app fetches the pages of the entries whose text is shorter than 1 200
-characters — up to 40 of them, four at a time, 12 s per page — parses them with
+summary (`fetchBodies`), the app fetches pages only when neither the attached text nor its reduce
+body reaches 1 200 characters and no cached note can be reused — up to 40 of them, four at a time,
+12 s per page — parses them with
 `@follow-app/readability`, and uses the article in place of the excerpt (a verbatim entry keeps its
 place in the prompt, cut to its share of the budget). The pass is best effort: a page that cannot be
 read leaves its entry as it was, the answer still streams, and the log line

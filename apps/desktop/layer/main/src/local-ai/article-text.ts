@@ -167,11 +167,11 @@ export const collectFetchTargets = (
       const url = typeof entry.url === "string" ? entry.url.trim() : ""
       if (!/^https?:\/\//i.test(url)) return false
 
-      const text = [entry.content, entry.body].find(
-        (value): value is string => typeof value === "string" && !!value,
-      )
-      // No text at all is worth fetching too: it is the difference between a title and a note.
-      return !text || text.length < minChars
+      // Either representation may already carry the article: a short prompt excerpt does not
+      // justify another page request when its reduce body is already long enough.
+      const contentChars = typeof entry.content === "string" ? entry.content.length : 0
+      const bodyChars = typeof entry.body === "string" ? entry.body.length : 0
+      return contentChars < minChars && bodyChars < minChars
     })
     .slice(0, maxEntries)
     .map(({ entry, index }) => ({ index, url: String(entry.url).trim() }))

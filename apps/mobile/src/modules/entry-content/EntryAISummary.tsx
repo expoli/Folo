@@ -115,7 +115,9 @@ export const EntryAISummary: FC<{
         className="my-3"
         rawSummaryForCopy={normalizedSummary || undefined}
         summary={summaryToShow}
-        pending={status === SummaryGeneratingStatus.Pending}
+        // Switching between the article and its readability text restarts the request; a summary
+        // already on screen stays there instead of collapsing into a skeleton for the new target.
+        pending={status === SummaryGeneratingStatus.Pending && !normalizedSummary}
         error={summaryError}
         onRetry={status === SummaryGeneratingStatus.Error ? handleRetry : undefined}
       />
