@@ -1,7 +1,7 @@
 {
   "name": "Folo",
   "type": "module",
-  "version": "1.17.0",
+  "version": "1.17.1",
   "private": true,
   "description": "Follow everything in one place",
   "author": "Folo Team",
@@ -103,9 +103,9 @@
     "workbox-window": "7.4.1",
     "wrangler": "4.136.1"
   },
-  "runtimeVersion": "1.17.0",
+  "runtimeVersion": "1.17.1",
   "productName": "Folo",
-  "mainHash": "8b8cfc2b209f36c2a03d87d202d4464125f5d22033fc3d05b9774de23bc26638",
+  "mainHash": "e11128bd1a295f32cddbd55ed68e23a632a1c9de76732d833765fd0f8bd33a13",
   "dependencies": {
     "@ai-sdk/openai-compatible": "3.0.6"
   }
