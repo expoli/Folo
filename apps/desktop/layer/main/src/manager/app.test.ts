@@ -279,10 +279,17 @@ describe("AppManager URL schemes", () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.app.isPackaged = false
   })
 
-  it("registers the app as the handler of its links", () => {
-    mocks.isTestRun = false
+  it("leaves the installed app's links alone in development builds", () => {
+    registerProtocols()
+
+    expect(mocks.app.setAsDefaultProtocolClient).not.toHaveBeenCalled()
+  })
+
+  it("registers the app as the handler of its links when packaged", () => {
+    mocks.app.isPackaged = true
 
     registerProtocols()
 
@@ -290,13 +297,5 @@ describe("AppManager URL schemes", () => {
       "follow",
       "folo",
     ])
-  })
-
-  it("leaves the installed app's links alone in test runs", () => {
-    mocks.isTestRun = true
-
-    registerProtocols()
-
-    expect(mocks.app.setAsDefaultProtocolClient).not.toHaveBeenCalled()
   })
 })
