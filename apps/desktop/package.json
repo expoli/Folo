@@ -70,6 +70,7 @@
     "async-es": "3.2.6",
     "autoprefixer": "10.6.1",
     "bufferutil": "4.1.0",
+    "cf": "1.0.0-beta.20",
     "code-inspector-plugin": "2.0.9",
     "cssnano": "9.0.5",
     "drizzle-orm": "0.45.3",
@@ -99,11 +100,12 @@
     "vite-plugin-route-builder": "0.4.1",
     "vite-tsconfig-paths": "6.1.1",
     "workbox-build": "7.4.1",
-    "workbox-window": "7.4.1"
+    "workbox-window": "7.4.1",
+    "wrangler": "4.136.1"
   },
   "runtimeVersion": "1.17.0",
   "productName": "Folo",
-  "mainHash": "33d22fed64e4c31da89217489b46d1b2f8c3a8136175d83c417b68108963c13c",
+  "mainHash": "8b8cfc2b209f36c2a03d87d202d4464125f5d22033fc3d05b9774de23bc26638",
   "dependencies": {
     "@ai-sdk/openai-compatible": "3.0.6"
   }

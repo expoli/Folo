@@ -32,6 +32,10 @@ export interface GeneralSettings {
    * Auto expand long social media
    */
   autoExpandLongSocialMedia: boolean
+  /**
+   * Auto play videos and video previews
+   */
+  autoPlayVideo: boolean
 
   // Pro feature
   enhancedSettings: boolean

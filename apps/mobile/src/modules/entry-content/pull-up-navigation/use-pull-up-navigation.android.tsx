@@ -1,10 +1,10 @@
-import * as Haptics from "expo-haptics"
 import { useCallback, useRef, useState } from "react"
 import { View } from "react-native"
 import { Gesture, GestureDetector } from "react-native-gesture-handler"
 import { runOnJS, useSharedValue, withSpring } from "react-native-reanimated"
 import type { ReanimatedScrollEvent } from "react-native-reanimated/lib/typescript/hook/commonTypes"
 
+import * as Haptics from "@/src/lib/haptics"
 import { useScrollViewProgress } from "@/src/lib/navigation/ScreenItemContext"
 
 import { PullUpIndicatorAndroid } from "./PullUpIndicatorAndroid"
@@ -142,6 +142,7 @@ export const usePullUpToNext = ({
   if (!enabled) {
     // Return empty implementation for non-Android platforms
     return {
+      isPulling: false,
       scrollViewEventHandlers: {},
       pullUpViewProps: {
         active: false,
@@ -157,6 +158,8 @@ export const usePullUpToNext = ({
   }
 
   return {
+    // The gesture only takes over at the end of the content, pulling up
+    isPulling: dragState,
     scrollViewEventHandlers: {
       onScroll: handleScroll,
     },

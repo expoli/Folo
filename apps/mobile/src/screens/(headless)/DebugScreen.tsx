@@ -4,7 +4,6 @@ import { sleep } from "@follow/utils"
 import { requireNativeModule } from "expo"
 import * as Clipboard from "expo-clipboard"
 import * as FileSystem from "expo-file-system/legacy"
-import * as SecureStore from "expo-secure-store"
 import type { FC } from "react"
 import * as React from "react"
 import { useRef, useState } from "react"
@@ -24,12 +23,14 @@ import { Text } from "@/src/components/ui/typography/Text"
 import { getDbPath } from "@/src/database"
 import { cookieKey, getCookie, sessionTokenKey, signOut } from "@/src/lib/auth"
 import { loading } from "@/src/lib/loading"
+import { scheduleLocalDataReset } from "@/src/lib/local-data-reset"
 import { DebugButtonGroup } from "@/src/lib/navigation/debug/DebugButtonGroup"
 import { useNavigation } from "@/src/lib/navigation/hooks"
 import { NavigationSitemapRegistry } from "@/src/lib/navigation/sitemap/registry"
 import type { NavigationControllerView } from "@/src/lib/navigation/types"
 import { setEnvProfile, useEnvProfile } from "@/src/lib/proxy-env"
 import { reloadApp } from "@/src/lib/reload-app"
+import { safeSecureStore } from "@/src/lib/secure-store"
 import { toast } from "@/src/lib/toast"
 import { showUpgradeRequiredDialog } from "@/src/modules/dialogs/UpgradeRequiredDialog"
 import {
@@ -107,8 +108,7 @@ export const DebugScreen: NavigationControllerView = () => {
                 text: "Clear",
                 style: "destructive",
                 async onPress() {
-                  const dbPath = getDbPath()
-                  await FileSystem.deleteAsync(dbPath)
+                  scheduleLocalDataReset()
                   await reloadApp("Clear Sqlite Data")
                 },
               },
@@ -321,7 +321,7 @@ const UserSessionSetting = () => {
       <Pressable
         className="ml-2"
         onPress={() => {
-          SecureStore.setItem(
+          safeSecureStore.setItem(
             cookieKey,
             JSON.stringify({
               [sessionTokenKey]: {

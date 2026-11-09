@@ -5,7 +5,6 @@ import { unreadSyncService } from "@follow/store/unread/store"
 import { nextFrame } from "@follow/utils"
 import type { FlashListProps, FlashListRef } from "@shopify/flash-list"
 import { FlashList } from "@shopify/flash-list"
-import * as Haptics from "expo-haptics"
 import { use, useCallback, useEffect, useImperativeHandle, useRef } from "react"
 import type { NativeScrollEvent, NativeSyntheticEvent } from "react-native"
 import { RefreshControl, ScrollView, View } from "react-native"
@@ -13,11 +12,20 @@ import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { useColor } from "react-native-uikit-colors"
 
 import { useBottomTabBarHeight } from "@/src/components/layouts/tabbar/hooks"
+import * as Haptics from "@/src/lib/haptics"
 import { ScreenItemContext } from "@/src/lib/navigation/ScreenItemContext"
 import { useHeaderHeight } from "@/src/modules/screen/hooks/useHeaderHeight"
 
 import { EntryListEmpty } from "../entry-list/EntryListEmpty"
 import { shouldApplyScrollResetSignal } from "./scroll-reset"
+
+/**
+ * FlashList keeps the first visible entry in place when entries arrive above it, as the server's
+ * first page does over the stored entries or a refresh with new ones. At the top of a timeline
+ * that leaves the newest entries above the screen, under the transparent header, so a list that
+ * rests at its top scrolls back up to show them. Scrolled down, the entry being read stays put.
+ */
+const keepTopWhenEntriesArriveAbove = { autoscrollToTopThreshold: 10 }
 
 type Props = {
   onRefresh: () => void
@@ -182,6 +190,7 @@ export const TimelineSelectorList = ({
           paddingTop: headerHeight,
           paddingBottom: tabBarHeight,
         }}
+        maintainVisibleContentPosition={keepTopWhenEntriesArriveAbove}
         {...props}
         onLayout={onLayout}
         onLoad={onLoad}
@@ -299,6 +308,7 @@ export const TimelineSelectorMasonryList = ({
       ref={ref}
       masonry
       refreshControl={refreshControl}
+      maintainVisibleContentPosition={keepTopWhenEntriesArriveAbove}
       {...props}
       onLoad={onLoad}
       onCommitLayoutEffect={onCommitLayoutEffect}
